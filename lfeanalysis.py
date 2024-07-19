@@ -192,7 +192,6 @@ class lfanalyse:
         self.atms=np.array([obspy.UTCDateTime(tm) for tm in tms])
         
         # the times of interest
-        print(iev)
         ii=iev==fnum
         self.tms=self.atms[ii]
 
