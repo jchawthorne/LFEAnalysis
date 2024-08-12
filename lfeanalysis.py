@@ -146,6 +146,7 @@ class lfanalyse:
         
         # read detection info and templates
         self.read_detection_info()
+        # may need to delete this line
         self.pick_templates()
 
         # read, normalize, and filter the data
@@ -961,6 +962,159 @@ class lfanalyse:
 
         
     #-----END DATA LOADING------------------------------
+
+    #-----BEGIN SAVING AND RELOADING--------------------
+
+    def collect_energies(self,fnums=[41]):
+        """
+        collect the energies computed for several families
+        """
+
+        # note family numbers
+        fnums=np.atleast_1d(fnums)
+        flocs=np.ndarray([0,3])
+
+        # diffen,diffenb,toten,totenb,statxy,statxym,takeoff_angles
+        simpadd=['toten','totenb','statxy','statxym','takeoff_angles','statloc',
+                 'arrival_times','totpol','totpolb']
+        simpadd=['statxy','statxym','takeoff_angles','statloc',
+                 'arrival_times']
+
+        # try adding 'scalings' to the list above
+        
+
+        
+        #subadd=['diffen','diffenb','diffpol','diffpolb','scalingsc','scalingscb']
+        subadd=['scalingsc','scalingscb','scalings']
+        listadd=['stacked_velocity_reduction']
+        listadd=[]
+        
+        # initialize an object
+        lfi=lfanalyse(lfi=self)
+        
+        for k in range(0,len(fnums)):
+
+            
+            fnum=fnums[k]
+            print('Family {:d}'.format(fnum))
+            
+            # read the results for this family
+            lfi.fnum=fnum
+            lfi.read_results()
+
+            # adjust the station names
+            lfi.add_number_to_station()
+
+            # station locations
+            lfi.relative_station_locations()
+            lfi.find_takeoff_angles(refdepth=30.)
+            
+            # add locations
+            flocs=np.append(flocs,lfi.floc.reshape([1,3]),axis=0)
+            
+            if k==0:
+                # copy over if this is the first
+                for ky in lfi.__dict__.keys():
+                    self.__setattr__(ky,lfi.__getattribute__(ky))
+                for ky in listadd:
+                    dct2=lfi.__getattribute__(ky)
+                    self.__setattr__(ky,dict.fromkeys(dct2.keys(),{}))
+                    dct1=self.__getattribute__(ky)
+                    for ky in dct2.keys():
+                        dct1[ky]={}
+                        dct1[ky][lfi.fnum]=dct2[ky]
+                        
+            else:
+                # append if it's not
+                for dname in simpadd:
+                    dct1=self.__getattribute__(dname)
+                    dct2=lfi.__getattribute__(dname)
+                    dct1.update(dct2)
+                for dname in subadd:
+                    dct1=self.__getattribute__(dname)
+                    dct2=lfi.__getattribute__(dname)
+                    for grp in dct1.keys():
+                        dct1[grp].update(dct2[grp])
+                for dname in listadd:
+                    dct1=self.__getattribute__(dname)
+                    dct2=lfi.__getattribute__(dname)
+                    for ky in dct2.keys():
+                        dct1[ky][lfi.fnum]=dct2[ky]
+                
+        self.fnums=fnums
+        self.flocs=flocs
+        self.floc=np.mean(self.flocs,axis=0)
+            
+    def add_number_to_station(self):
+        """
+        add the family number to the station names
+        """
+
+        # dictionaries to modify
+        # energies
+
+        #dcts=[self.toten,self.totenb,self.totpol,self.totpolb]
+        dcts=[]
+        #dcts=dcts+list(self.diffen.values())+list(self.diffenb.values())
+        #dcts=dcts+list(self.diffpol.values())+list(self.diffpolb.values())
+        dcts=dcts+list(self.scalingsc.values())+list(self.scalingscb.values())
+        
+        # station info
+        print(self.statxy)
+        print(self.scalings.values())
+        dcts=dcts+[self.statxy,self.statloc]+list(self.scalings.values())
+        if 'statxym' in self.__dict__.keys():
+            dcts=dcts+[self.statxym,self.takeoff_angles,self.arrival_times]
+
+        # what to add to the keys
+        kyadd='{:d}-'.format(self.fnum)
+        
+        for dct in dcts:
+            # for each key, replace in new location
+            kys=list(dct.keys())
+            for ky in kys:
+                dct[kyadd+ky]=dct.pop(ky)
+            
+    
+    def read_results(self):
+        """
+        read the results 
+        """
+
+        # where to save
+        fname=os.path.join(self.directory(),'Results')
+
+        # save
+        with open(fname, "rb") as fl:
+            lfi=pickle.load(fl)
+        
+        # copy information from the saved object
+        if lfi is not None:
+            for ky in lfi.__dict__.keys():
+                self.__setattr__(ky,lfi.__getattribute__(ky))
+
+
+    def save_results(self):
+        """
+        save all the processed information except for the original seismograms
+        """
+
+        # make a copy?
+        lfi=lfanalyse(lfi=self)
+
+        # remove the data from the copy
+        if 'data' in lfi.__dict__.keys():
+            lfi.__delattr__('data')
+
+        # where to save
+        fname=os.path.join(self.directory(),'Results')
+
+        # save
+        with open(fname, "wb") as fl:
+            pickle.dump(lfi, fl)
+
+    
+    #-----END SAVING AND RELOADING----------------------
 
     #-----BEGIN DATA NAMING CONVENTIONS-----------------
 
