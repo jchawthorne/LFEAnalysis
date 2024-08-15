@@ -2338,7 +2338,7 @@ class lfanalyse:
                 bmdn=np.array(bmdn)
             else:
                 bmdn=avefun(np.array(sclb),axis=0)
-
+            
             # how many are negative
             frcneg=np.sum(bmdn<0)/np.sum(bmdn<float('inf'))
             neglbl='{:0.0f}% < 0'.format(frcneg*100)
@@ -2377,6 +2377,7 @@ class lfanalyse:
         for ph in pm[:,1]:
             ph.yaxis.tick_right()
             ph.yaxis.set_label_position('right')
+
 
                 
         
@@ -2803,6 +2804,77 @@ class lfanalyse:
 
     
     #-----END FOR COMPARING DURATIONS-------------------
+    
+# Jean added on 14/8/2024
+#-----BEGIN RATIO OF SCALINGS OF LATE/EARLY EVENTS------------
+    def Plot_Ratio_of_Late_and_Early(self,fnums=np.array([1,12,142,144,156,191,22,23,246,256,3,30,31,49,52,53,55,61,62,65,66,7,70,74],dtype=int)):
+         # loop over
+          fnums=np.unique(fnums)
+          for fnum in fnums:
+              # as before, we need to initialize an analysis object
+              lf=self.lfanalyse(fnum=fnum)
+          
+              # and load in the detections and waveforms
+              lf.load_prep_data(flm=[1,8],single_norm=False)
+    
+              # stack for each group
+              lf.stack_by_group()
+
+              # and pick arrival times
+              lf.pick_stacks(minsnr=10)
+    
+              # compute scalings
+              lf.relative_station_locations()
+              lf.compute_scalings(wlen=[0,4])
+    
+              # let's go ahead and normalize the radial and transverse scalings for all stations
+              lf.normalize_radtrans_scaling()
+    
+              # pick some stations for duration classification
+              lf.split_stations(prc_classify=0.75)
+    
+              # and estimate best-fitting amplitudes and durations
+              olddurs=np.array([0.2,0.3])
+              newdurs=np.arange(0.1,0.61,0.1)
+              lf.duration_search(max_shift=0.2,olddurs=olddurs,newdurs=newdurs)
+    
+              # save the results
+              lf.save_results()
+        
+          # initialize and collect some results
+          lf2=self.lfanalyse(fnum=1)
+
+          # collect the energy calculations
+          lf2.collect_energies(fnums=fnums)
+
+          latescales=lf2.scalings['late']
+          earlyscales=lf2.scalings['early']
+          # compute ratios of late/early stacks
+          ratioScales={key: latescales[key] / earlyscales.get(key, 0)
+                       for key in latescales.keys()}
+          # compute the median of late/early stacks ratios
+          ratioScalesValues=list(ratioScales.values())
+          ratioScalesValues=np.array(ratioScalesValues)
+          medianRatios=np.median(ratioScalesValues)
+          print(medianRatios)
+          lists = ratioScales.items() # sorted by key, return a list of tuples
+          x, y = zip(*lists) # unpack a list of pairs into two tuples
+          x=list(x)
+          xfam=[]
+          for xx in x:
+              xx=xx.split('-')
+              xfam.append(xx[0])
+        
+          # plot the ratios of early and late stacks of each station
+          plt.scatter(xfam, ratioScales.values())
+          plt.xlabel("Families") 
+          plt.ylabel("ratios of late and early stacks")
+          plt.hlines(y=medianRatios,xmin=-1, xmax=25, colors='r', label='median')
+          plt.legend()
+          plt.show()
+    
+
+#-----END RATIO OF SCALINGS OF LATE/EARLY EVENTS------------
 
     
 #-----BEGIN STANDALONE ARRIVAL TIME AND SNR ANALYSIS----------
@@ -2875,3 +2947,4 @@ def compute_snrs_and_picks(st,minsnr=20,wlen=5.):
     return snrs,st,stns    
     
 #-----END STANDALONE ARRIVAL TIME AND SNR ANALYSIS------------
+
