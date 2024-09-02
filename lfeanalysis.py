@@ -4,9 +4,11 @@ import os,glob
 import matplotlib.pyplot as plt
 import seisproc
 import pickle
+import matplotlib
 from matplotlib import gridspec
 from mpl_toolkits.basemap import Basemap
 from scipy import signal
+from scipy import ndimage
 from scipy import interpolate
 import read_catalogues
 
@@ -200,6 +202,37 @@ class lfanalyse:
         # let's set the magnitudes to nan for now
         self.mags=np.ndarray(self.tms.size,dtype=float)*float('nan')
 
+    def read_detection_info_baratin2018(self):
+        """
+        read Baratin et al (2018)'s detection times and templates
+        """
+
+        # note the directory with these data
+        fdir=os.path.join(self.data_directory,'Catalogues','Baratin2018')
+        
+        # read some LFE times
+        # they're formatted as from the slow earthquake database
+        tms,loc,mag,dct=read_catalogues.read_seq_database(fdir)
+
+        # note the family locations and family numbers
+        flocs,iev=np.unique(loc,axis=0,return_inverse=True)
+
+        # because I don't like family 0
+        iev=iev+1
+
+        # select a family location
+        self.floc=flocs[self.fnum-1,:].flatten()
+
+        # keep a copy of all the detections
+        self.atms=np.array([obspy.UTCDateTime(tm) for tm in tms])
+        
+        # the times of interest
+        ii=iev==self.fnum
+        self.tms=self.atms[ii]
+
+        # the frank et al catalog doesn't have magnitudes, so
+        # let's set the magnitudes to nan for now
+        self.mags=np.ndarray(self.tms.size,dtype=float)*float('nan')
         
         
     def read_detection_info_bostock(self):
@@ -664,14 +697,14 @@ class lfanalyse:
             # if we need to rotate
             if 'R' in cmps or 'T' in cmps:
                 azm=self.stataz[stn[ks]]
-                sti=self.project_waveforms(sti,stns=stn[ks],y_azimuths=azm)
+                sti,trash=self.project_waveforms(sti,stns=stn[ks],y_azimuths=azm)
                 for tr in sti.select(channel='X*'):
                     tr.stats.channel='T'
                 for tr in sti.select(channel='Y*'):
                     tr.stats.channel='R'
 
                 for k in range(0,len(stm)):
-                    stm[k]=self.project_waveforms(stm[k],stns=stn,y_azimuths=azm)
+                    stm[k],trash=self.project_waveforms(stm[k],stns=stn,y_azimuths=azm)
                     for tr in stm[k].select(channel='X*'):
                         tr.stats.channel='T'
                     for tr in stm[k].select(channel='Y*'):
@@ -873,6 +906,429 @@ class lfanalyse:
 
     
     #-----END STACKING---------------------------------
+
+    #-----BEGIN COHERENT ENERGY ANALYSIS---------------
+
+    
+    def compute_coherent_energy(self,stack=None,stack_window=[0,3],stack_taper_length=0.5,
+                                data_window=[-1,1],components=['R','T'],noise_window=None,
+                                weight_window=[0,4]):
+        """
+        Parameters
+        ----------
+        stack : 
+             the stack to use (default: self.totstk)
+        stack_window :
+            the portion of the stacks to use as templates, relative to the pick time
+        stack_taper_length :
+            length of time to add a taper at the beginning and end of the stack
+        data_window :
+            the portion of the x-c with the target data to calculate energy in
+        components :
+            which components to consider
+        noise_window :
+            a window in which to calculate the noise
+        weight_window :
+            a window in which to calculate the noise for the weighting
+        """
+
+        self.stack_window=np.atleast_1d(stack_window)
+        self.data_window=np.atleast_1d(data_window)
+        if noise_window is None:
+            noise_window=self.data_window-np.diff(self.data_window)[0]*1.5
+        if stack is None:
+            stack=self.totstk
+
+        # stations to consider
+        stns=np.unique([tr.stats.station for tr in stack])
+
+        # the station amplitudes
+        statamp=dict([(self.xc_stns[k],self.statamp[k])
+                      for k in range(0,self.statamp.size)])
+
+        # change the channel naming convention if needed
+        self.replace_channels(self.data)
+        self.replace_channels(self.ev)
+
+        # note the event arrival time shifts
+        event_shifts=np.zeros(self.tms.size,dtype=float)
+
+        # number of points in the x-c window
+        Nxc=int(np.round(self.sampling_rate*np.diff(data_window)[0]))
+
+        # create some tapers for the x-c
+        import spectrum
+        tpr,V=spectrum.dpss(N=Nxc,NW=3)
+        #        tpr=tpr[:,V>0.99]
+        tpr=tpr[:,0:1]
+        tpr=tpr.reshape([Nxc,1,tpr.shape[1]])
+        Ntaper=tpr.shape[2]
+
+        # frequencies for the FT
+        freq=np.fft.rfftfreq(Nxc,d=1/self.sampling_rate)
+        self.freq_energy=freq
+
+        # initialize saved xc
+        target_fxc=np.ndarray([freq.size,self.tms.size,Ntaper,len(stns),len(components)],
+                              dtype=complex)*float('nan')
+        noise_fxc=np.ndarray([freq.size,self.tms.size,Ntaper,len(stns),len(components)],
+                              dtype=complex)*float('nan')
+        stack_fxc=np.ndarray([freq.size,1,Ntaper,len(stns),len(components)],
+                             dtype=complex)*float('nan')
+
+        # initialize saved noise
+        noise_estimate=np.ndarray([self.tms.size,len(stns),len(components)],
+                                  dtype=float)*float('nan')
+
+        for kstat in range(0,len(stns)):
+            stn = stns[kstat]
+            # find this station in the stack
+            sti=stack.select(station=stn)
+
+            # note the data we need
+            kys=np.array(list(self.data.keys()))
+            ix=np.array([stn in ky for ky in kys])
+            kys=kys[ix]
+            data=dict([(ky,self.data[ky]) for ky in kys])
+
+            # the arrival time shifts
+            iev=self.ev['.'.join([stn,'E'])]
+            ev_shift=event_shifts[iev]
+            nshf=np.round(ev_shift/sti[0].stats.delta).astype(int)
+            ev_shift=ev_shift-nshf*sti[0].stats.delta
+
+            # if we need radial or transverse projection
+            if 'R' in components or 'T' in components:
+                # the stack projections
+                strot,datarot=self.project_waveforms(sti,data=self.data)
+                for tr in strot.select(channel='X*'):
+                    tr.stats.channel='T'
+                for tr in strot.select(channel='Y*'):
+                    tr.stats.channel='R'
+                sti=sti+strot
+
+                # the data projections
+                for ky in list(datarot.keys()):
+                    ky2=ky.replace('.X','.T')
+                    ky2=ky2.replace('.Y','.R')
+                    datarot[ky2]=datarot.pop(ky)
+                data.update(datarot)
+
+            for kcomp in range(0,len(components)):
+                cmpi = components[kcomp]
+                
+                # get the relevant component's data
+                tr=sti.select(channel=cmpi)[0].copy()
+
+                # unnormalize the stack
+                tr.data=tr.data*statamp[stn]
+
+                # and the relevant target data
+                tdata=data['.'.join([stn,cmpi])]
+
+                # unnormalize the target data
+                nrm=self.data_norm[stn]
+                tdata=np.multiply(tdata,nrm.reshape([1,nrm.size]))
+
+                #tdata=tr.data.reshape([tr.stats.npts,1])
+                #tdata=np.repeat(tdata,len(iev),axis=1)
+
+                # grab out the stack window
+                i1=tr.stats.t0+self.stack_window[0]-stack_taper_length
+                i1=int(np.round((i1)*tr.stats.sampling_rate))
+                i2=np.diff(self.stack_window)[0]+2*stack_taper_length
+                i2=i1+int(np.round(i2*tr.stats.sampling_rate))
+                tr.data=tr.data[i1:i2]
+
+                # add a taper to the stack
+                tr.taper(type='hann',max_percentage=0.5,max_length=stack_taper_length)
+                stk=tr.data
+
+                # for the weighting calculation
+                k1=tr.stats.t0+weight_window[0]
+                k1=int(np.round((k1)*tr.stats.sampling_rate))
+                k2=np.diff(weight_window)[0]
+                k2=k1+int(np.round((k2)*tr.stats.sampling_rate))
+                noise_estimate[iev,kstat,kcomp]=np.std(tdata[k1:k2,:],axis=0)
+
+                # for the noise calculation
+                k1=tr.stats.t0+noise_window[0]+self.stack_window[0]-stack_taper_length
+                k1=int(np.round((k1)*tr.stats.sampling_rate))
+                k2=k1+Nxc+1
+                
+                # index range we'd use for the target data without the x-c
+                j1=tr.stats.t0+self.data_window[0]+self.stack_window[0]-stack_taper_length
+                j1=int(np.round((j1)*tr.stats.sampling_rate))
+                j2=j1+Nxc+1
+                
+                # but add points at the beginning and end
+                Nstk=i2-i1
+                j1,j2=j1,j2+Nstk
+                k1,k2=k1,k2+Nstk
+
+                # grab the data for the noise and the target estimate
+                ndata=[tdata[k1+nshf[k]:k2+nshf[k],k] for k in range(0,nshf.size)]
+                tdata=[tdata[j1+nshf[k]:j2+nshf[k],k] for k in range(0,nshf.size)]
+
+                #----with target-------------------
+                
+                # x-c with target
+                xc=[np.correlate(tdatai,stk,mode='valid') for tdatai in tdata]
+                xc=np.stack(xc).T
+                xc=xc[0:Nxc,:]
+                
+                # reshape and multiply by the tapers
+                xc=xc.reshape(list(xc.shape)+[1])
+                xc=np.multiply(xc,tpr)
+
+                # FFT and save
+                fxci=np.fft.rfft(xc,axis=0)
+                for ktap in range(0,Ntaper):
+                    target_fxc[0:freq.size,iev,ktap,kstat,kcomp]=fxci[:,:,ktap]
+
+                #----with noise---------------------
+
+                # x-c with target
+                xc=[np.correlate(tdatai,stk,mode='valid') for tdatai in ndata]
+                xc=np.stack(xc).T
+                xc=xc[0:Nxc,:]
+                
+                # reshape and multiply by the tapers
+                xc=xc.reshape(list(xc.shape)+[1])
+                xc=np.multiply(xc,tpr)
+
+                # FFT and save
+                fxci=np.fft.rfft(xc,axis=0)
+                for ktap in range(0,Ntaper):
+                    noise_fxc[0:freq.size,iev,ktap,kstat,kcomp]=fxci[:,:,ktap]
+
+                #----with stack---------------------
+                    
+                # also x-c for the stack
+                Nbf=-self.data_window[0]
+                Nbf=int(np.round(Nbf*self.sampling_rate))
+                xc=np.hstack([np.zeros(Nbf),stk,np.zeros(Nxc)])
+                xc=np.correlate(xc,stk,mode='valid')
+                xc=xc[0:Nxc]
+
+                # multiply this by the taper
+                xc=xc.reshape([xc.size,1])
+                xc=np.multiply(xc,tpr[:,0,:])                    
+                
+                fxci=np.fft.rfft(xc,axis=0)
+                for ktap in range(0,Ntaper):
+                    stack_fxc[:,0,ktap,kstat,kcomp]=fxci[:,ktap]
+
+
+        # normalize
+        noise_fxc=np.divide(noise_fxc,np.abs(stack_fxc))
+        target_fxc=np.divide(target_fxc,np.abs(stack_fxc))
+
+        # save coherent energy values
+        self.stack_fxc=stack_fxc
+        self.target_fxc_normed=target_fxc
+        self.noise_fxc_normed=noise_fxc
+
+
+        # grab the normalized cross-spectra to compute energy
+        fxc=self.target_fxc_normed
+        nfxc=self.noise_fxc_normed
+
+        # some potential weights
+        wgts=noise_estimate.reshape([1,self.tms.size,1,len(stns),len(components)])
+        wgts=np.power(wgts,-1)
+        
+        # which stations are okay
+        isn=np.logical_or(np.isnan(fxc),np.isnan(nfxc))
+        isn=np.sum(isn,axis=0,keepdims=True)
+        isn=np.logical_or(isn,np.isnan(wgts))
+        Nstath=np.sum(~isn,axis=3,keepdims=True)
+        isn=np.logical_or(isn,np.repeat(Nstath<=1,isn.shape[3],axis=3))
+        Nstath=np.sum(~isn,axis=3)
+
+        # repeat weights per taper
+        wgts=np.repeat(wgts,isn.shape[2],axis=2)
+
+        # and which components
+        Ncomph=np.sum(~isn,axis=4)
+
+        # set problematic weights to zero
+        # and change weights so that the average is 1
+        wgts[isn]=0.
+        wgts=np.ma.masked_array(wgts,mask=isn)
+
+        weightbylfe=False
+        if weightbylfe:
+            nwgts=np.ma.mean(wgts,axis=3,keepdims=True)
+            wgts=np.ma.divide(wgts,nwgts)
+        else:
+            nwgts=np.ma.mean(wgts.flatten())
+            wgts=wgts/nwgts
+        
+        # add weighting
+        fxc=np.multiply(fxc,wgts)
+        nfxc=np.multiply(nfxc,wgts)
+        
+        # total energy
+        self.total_energy=np.ma.sum(np.power(np.abs(fxc),2),axis=3)
+        self.total_energy=np.divide(self.total_energy,np.maximum(Nstath,1))
+
+        # noise energy
+        self.noise_energy=np.ma.sum(np.power(np.abs(nfxc),2),axis=3)
+        self.noise_energy=np.divide(self.noise_energy,np.maximum(Nstath,1))
+        
+        # coherent energy over stations
+        self.coherent_energy=np.power(np.abs(np.ma.sum(fxc,axis=3)),2)-\
+            np.ma.sum(np.power(np.abs(fxc),2),axis=3)
+        Nstat=np.multiply(Nstath,Nstath-1)
+        Nstat=np.maximum(Nstat,1)
+        self.coherent_energy=np.divide(self.coherent_energy,Nstat)
+
+        # coherent energy over components
+        self.component_energy=np.power(np.abs(np.ma.sum(fxc,axis=4)),2)-\
+            np.ma.sum(np.power(np.abs(fxc),2),axis=4)
+        Ncomp=np.multiply(Ncomph,Ncomph-1)
+        Ncomp=np.maximum(Ncomp,1)
+        self.component_energy=np.divide(self.component_energy,Ncomp)
+
+        # average over tapers
+        self.energy_channels=np.atleast_1d(components)
+        self.coherent_energy=np.mean(self.coherent_energy,axis=2)
+        self.component_energy=np.mean(self.component_energy,axis=2)
+        self.total_energy=np.mean(self.total_energy,axis=2)
+        self.noise_energy=np.mean(self.noise_energy,axis=2)
+        self.Nstat_energy=Nstath[0,:,0,0]
+
+        # and average over stations
+        self.component_energy=np.ma.mean(self.component_energy,axis=2)
+
+
+    def plot_coherent_energy(self,minimum_stations=3,prc=0.7,kcomp=0):
+        """
+        plot coherent energy as a function of frequency,
+        averaged over LFEs
+        
+        Parameters
+        ----------
+        minimum_stations :
+           minimum number of stations to allow in the stack
+        prc : 
+           the bootstrap percentiles to plot
+        kcomp :
+           which of the components to use
+        """
+
+        # for averaging over components
+        kcomp=np.atleast_1d(kcomp)
+
+        # by default, consider all available LFEs
+        iok=np.where(self.Nstat_energy>=minimum_stations)[0]
+
+        # average over components
+        total_energy=np.ma.mean(self.total_energy[:,:,kcomp],axis=2)
+        coherent_energy=np.ma.mean(self.coherent_energy[:,:,kcomp],axis=2)
+        noise_energy=np.ma.mean(self.noise_energy[:,:,kcomp],axis=2)
+        
+        # total, noise, and coherent energies
+        smt=np.ma.mean(total_energy[:,iok],axis=1)
+        smn=np.ma.mean(noise_energy[:,iok],axis=1)
+        smd=smt-smn
+        smc=np.ma.mean(coherent_energy[:,iok],axis=1)
+        smm=np.ma.mean(self.component_energy[:,iok],axis=1)
+        rt=np.divide(smc,smd)
+
+        # compute the bootstrapped values
+        print('Bootstrapping')
+        Nboot=50
+        smtb=np.ndarray([smt.size,Nboot],dtype=float)
+        smnb=np.ndarray([smt.size,Nboot],dtype=float)
+        smcb=np.ndarray([smt.size,Nboot],dtype=float)
+        smmb=np.ndarray([smt.size,Nboot],dtype=float)
+        for kb in range(0,Nboot):
+            ix=np.random.choice(iok,iok.size,replace=True)
+            smtb[:,kb]=np.ma.mean(total_energy[:,ix],axis=1)
+            smnb[:,kb]=np.ma.mean(noise_energy[:,ix],axis=1)
+            smcb[:,kb]=np.ma.mean(coherent_energy[:,ix],axis=1)
+            smmb[:,kb]=np.ma.mean(self.component_energy[:,ix],axis=1)
+        smdb=smtb-smnb
+        rtb=np.divide(smcb,smdb)
+
+        # get the percentiles
+        iprc=(Nboot*(0.5+0.5*np.array([-1,1])*prc)).astype(int)
+        smtb.sort(axis=1)
+        smnb.sort(axis=1)
+        smcb.sort(axis=1)
+        smdb.sort(axis=1)
+        smmb.sort(axis=1)
+        rtb.sort(axis=1)
+
+        smtb=smtb[:,iprc]
+        smnb=smnb[:,iprc]
+        smcb=smcb[:,iprc]        
+        smdb=smdb[:,iprc]
+        smmb=smmb[:,iprc]
+        rtb=rtb[:,iprc]
+
+        print('Plotting')
+        f=plt.figure(figsize=(8,8))
+        gs,p=gridspec.GridSpec(2,1),[]
+        gs.update(left=0.1,right=0.97,bottom=0.1,top=0.92)
+        gs.update(hspace=0.05,wspace=0.25)
+        p=[]
+        for k in range(0,2):
+            p.append(plt.subplot(gs[k]))
+        p=np.array(p)
+        pm=p.reshape([p.size,1])
+        pt,pr=p[0],p[1]
+        
+        # plot the best estimates
+        lw=2
+        ht,=pt.loglog(self.freq_energy,smt,color='blue',linewidth=lw)
+        hn,=pt.loglog(self.freq_energy,smn,color='purple',linestyle='--',linewidth=lw)
+        hc,=pt.loglog(self.freq_energy,smc,color='red',linewidth=lw)
+        hd,=pt.loglog(self.freq_energy,smd,color='black',linestyle='--',linewidth=lw)
+        hm,=pt.loglog(self.freq_energy,smm,color='darkgreen',linestyle='--',linewidth=lw)
+
+        hr,=pr.loglog(self.freq_energy,rt,color='red',linestyle='--',linewidth=lw)
+
+        lg=pt.legend([ht,hn,hd,hc,hm],['total','noise','total - noise','coherent across stations','coherent across channels'])
+
+        # and the ranges for the background
+        x=np.append(self.freq_energy,np.flipud(self.freq_energy))
+
+        y=np.append(smtb[:,0],np.flipud(smtb[:,1]))
+        ply=matplotlib.patches.Polygon(np.stack([x,y]).T,color='blue',alpha=0.2)
+        pt.add_patch(ply)
+
+        y=np.append(smnb[:,0],np.flipud(smnb[:,1]))
+        ply=matplotlib.patches.Polygon(np.stack([x,y]).T,color='purple',alpha=0.2)
+        pt.add_patch(ply)
+
+        y=np.append(smcb[:,0],np.flipud(smcb[:,1]))
+        ply=matplotlib.patches.Polygon(np.stack([x,y]).T,color='red',alpha=0.2)
+        pt.add_patch(ply)
+
+        y=np.append(smdb[:,0],np.flipud(smdb[:,1]))
+        ply=matplotlib.patches.Polygon(np.stack([x,y]).T,color='darkgray',alpha=0.2)
+        pt.add_patch(ply)
+
+        y=np.append(smmb[:,0],np.flipud(smmb[:,1]))
+        ply=matplotlib.patches.Polygon(np.stack([x,y]).T,color='green',alpha=0.2)
+        pt.add_patch(ply)
+
+        
+        y=np.append(rtb[:,0],np.flipud(rtb[:,1]))
+        ply=matplotlib.patches.Polygon(np.stack([x,y]).T,color='red',alpha=0.2)
+        pr.add_patch(ply)
+
+        pt.set_ylabel('powers in target window');
+        pr.set_ylabel('coherent power fraction');
+        pr.set_xlabel('frequency (Hz)');
+        pt.set_xticklabels('')
+        pr.axhline(1,linestyle='-.',color='k',alpha=0.5)
+        
+        
+    #-----END COHERENT ENERGY ANALYSIS-----------------
     
 
     #-----BEGIN DATA LOADING----------------------------
@@ -985,7 +1441,7 @@ class lfanalyse:
 
         
         #subadd=['diffen','diffenb','diffpol','diffpolb','scalingsc','scalingscb']
-        subadd=['scalingsc','scalingscb','scalings']
+        subadd=['scalingsc','scalingscb','scalings','gxc']
         listadd=['stacked_velocity_reduction']
         listadd=[]
         
@@ -1017,12 +1473,13 @@ class lfanalyse:
                 for ky in lfi.__dict__.keys():
                     self.__setattr__(ky,lfi.__getattribute__(ky))
                 for ky in listadd:
-                    dct2=lfi.__getattribute__(ky)
-                    self.__setattr__(ky,dict.fromkeys(dct2.keys(),{}))
-                    dct1=self.__getattribute__(ky)
-                    for ky in dct2.keys():
-                        dct1[ky]={}
-                        dct1[ky][lfi.fnum]=dct2[ky]
+                    if ky in lfi.__dict__.keys():
+                        dct2=lfi.__getattribute__(ky)
+                        self.__setattr__(ky,dict.fromkeys(dct2.keys(),{}))
+                        dct1=self.__getattribute__(ky)
+                        for ky in dct2.keys():
+                            dct1[ky]={}
+                            dct1[ky][lfi.fnum]=dct2[ky]
                         
             else:
                 # append if it's not
@@ -1031,15 +1488,17 @@ class lfanalyse:
                     dct2=lfi.__getattribute__(dname)
                     dct1.update(dct2)
                 for dname in subadd:
-                    dct1=self.__getattribute__(dname)
-                    dct2=lfi.__getattribute__(dname)
-                    for grp in dct1.keys():
-                        dct1[grp].update(dct2[grp])
+                    if dname in lfi.__dict__.keys():
+                        dct1=self.__getattribute__(dname)
+                        dct2=lfi.__getattribute__(dname)
+                        for grp in dct1.keys():
+                            dct1[grp].update(dct2[grp])
                 for dname in listadd:
-                    dct1=self.__getattribute__(dname)
-                    dct2=lfi.__getattribute__(dname)
-                    for ky in dct2.keys():
-                        dct1[ky][lfi.fnum]=dct2[ky]
+                    if dname in lfi.__dict__.keys():
+                        dct1=self.__getattribute__(dname)
+                        dct2=lfi.__getattribute__(dname)
+                        for ky in dct2.keys():
+                            dct1[ky][lfi.fnum]=dct2[ky]
                 
         self.fnums=fnums
         self.flocs=flocs
@@ -1057,12 +1516,15 @@ class lfanalyse:
         dcts=[]
         #dcts=dcts+list(self.diffen.values())+list(self.diffenb.values())
         #dcts=dcts+list(self.diffpol.values())+list(self.diffpolb.values())
-        dcts=dcts+list(self.scalingsc.values())+list(self.scalingscb.values())
+        if 'scalingsc' in self.__dict__.keys():
+            dcts=dcts+list(self.scalingsc.values())+list(self.scalingscb.values())
+        if 'gxc' in self.__dict__.keys():
+            dcts=dcts+list(self.gxc.values())
         
         # station info
-        print(self.statxy)
-        print(self.scalings.values())
-        dcts=dcts+[self.statxy,self.statloc]+list(self.scalings.values())
+        dcts=dcts+[self.statxy,self.statloc]
+        if 'scalings' in self.__dict__.keys():
+            dcts=dcts+list(self.scalings.values())
         if 'statxym' in self.__dict__.keys():
             dcts=dcts+[self.statxym,self.takeoff_angles,self.arrival_times]
 
@@ -1614,7 +2076,7 @@ class lfanalyse:
                                                 np.cos(az1*np.pi/180)])
 
 
-    def project_waveforms(self,st,stns=None,y_azimuths=[0.,30.,60.]):
+    def project_waveforms(self,st,stns=None,y_azimuths=[0.,30.,60.],data=None):
         """
         Parameters
         ----------
@@ -1624,6 +2086,8 @@ class lfanalyse:
            stations to consider
         y_azimuths : 
            azimuths to project to, in degrees
+        data : 
+           a dictionary of additional data to be rotated
 
         Returns
         -------
@@ -1643,6 +2107,8 @@ class lfanalyse:
 
         # outputs
         strot=obspy.Stream()
+        datarot={}
+        dataE,dataN=0.,0.
         
         for stn in stns:
             sti=st.select(station=stn)
@@ -1651,6 +2117,11 @@ class lfanalyse:
                 tre=sti.select(channel='E')[0]
                 trn=sti.select(channel='N')[0]
 
+                # also for the data to rotate, if given
+                if data is not None:
+                    dataE=data['.'.join([stn,'E'])]
+                    dataN=data['.'.join([stn,'N'])]
+
                 # angle in radians
                 thet=np.pi/180*azm
 
@@ -1658,17 +2129,21 @@ class lfanalyse:
                 tr_y=trn.copy()
                 tr_y.data=tre.data*np.sin(thet)+trn.data*np.cos(thet)
                 tr_y.stats.channel='Y_{:0.0f}'.format(azm)
+                data_y=dataE*np.sin(thet)+dataN*np.cos(thet)
 
                 # new x/E
                 tr_x=tre.copy()
                 tr_x.data=tre.data*np.cos(thet)-trn.data*np.sin(thet)
                 tr_x.stats.channel='X_{:0.0f}'.format(azm)
-
+                data_x=dataE*np.cos(thet)-dataN*np.sin(thet)
+                
                 # add to set
                 strot.append(tr_x)
                 strot.append(tr_y)
+                datarot['.'.join([stn,'X'])]=data_x
+                datarot['.'.join([stn,'Y'])]=data_y
 
-        return strot
+        return strot,datarot
 
 
     
@@ -1918,8 +2393,8 @@ class lfanalyse:
             if len(stt)==3:
                 # also rotate to radial and transverse
                 # here Y is radial, X is transverse
-                stt_rot=self.project_waveforms(stt,stns=[stn],
-                                               y_azimuths=self.stataz[stn])
+                stt_rot,trash=self.project_waveforms(stt,stns=[stn],
+                                                     y_azimuths=self.stataz[stn])
                 
                 # find portion of the data to extract
                 tr=stt[0]
@@ -1929,8 +2404,8 @@ class lfanalyse:
                 for ky in grps:
                     # seismograms for this group
                     stg=self.grpstk[ky].select(station=stn)
-                    stg_rot=self.project_waveforms(stg,stns=[stn],
-                                                   y_azimuths=self.stataz[stn])
+                    stg_rot,trash=self.project_waveforms(stg,stns=[stn],
+                                                y_azimuths=self.stataz[stn])
 
                     # keep track of radial and transverse value
                     t_radb,t_transb=0.,0.
@@ -2338,7 +2813,7 @@ class lfanalyse:
                 bmdn=np.array(bmdn)
             else:
                 bmdn=avefun(np.array(sclb),axis=0)
-            
+
             # how many are negative
             frcneg=np.sum(bmdn<0)/np.sum(bmdn<float('inf'))
             neglbl='{:0.0f}% < 0'.format(frcneg*100)
@@ -2377,7 +2852,6 @@ class lfanalyse:
         for ph in pm[:,1]:
             ph.yaxis.tick_right()
             ph.yaxis.set_label_position('right')
-
 
                 
         
@@ -2583,6 +3057,405 @@ class lfanalyse:
 
         
     #-----END X-C FOR MOMENT ESTIMATION-----------------
+
+    #-----BEGIN X-C FOR ARRIVAL TIME ANALYSIS-----------
+
+    
+    def plot_xc_between(self,groups=None,azimuth_bins=None,takeoff_bins=None,recompute=True):
+        """
+        plot the cross-correlations between stacks
+
+        Parameters
+        ----------
+        groups :
+            which groups to plot
+        azimuth_bins :
+            azimuth ranges 
+        takeoff_bins :
+            takeoff angle ranges
+        recompute :
+            if the averages need to be computed (default: True)
+        """
+
+        if azimuth_bins is None:
+            azimuth_bins=[[0,45],[315,0]]
+        if takeoff_bins is None:
+            takeoff_bins=[[0,90],[90,180]]
+        if groups is None:
+            groups=list(self.gxc.keys())
+        elif isinstance(groups,str):
+            groups=[groups]
+
+        Na=len(azimuth_bins)
+        Nt=len(takeoff_bins)
+        Ng=len(groups)
+
+        f=plt.figure(figsize=(10,8))
+        gs,p=gridspec.GridSpec(Nt,Na),[]
+        gs.update(left=0.1,right=0.97,bottom=0.5,top=0.92)
+        gs.update(hspace=0.05,wspace=0.1)
+        p=[plt.subplot(gs[0])]
+        for k in range(1,Na*Nt):
+            p.append(plt.subplot(gs[k],sharex=p[0]))
+        p=np.array(p)
+        pm=p.reshape([Nt,Na])
+
+        gs2,p2=gridspec.GridSpec(Nt,Na),[]
+        gs2.update(left=0.1,right=0.97,bottom=0.1,top=0.4)
+        gs2.update(hspace=0.1,wspace=0.1)
+        p2=[plt.subplot(gs2[0])]
+        for k in range(1,Na*Nt):
+            p2.append(plt.subplot(gs2[k],sharex=p2[0]))
+        p2=np.array(p2)
+        pm2=p2.reshape([Nt,Na])
+
+        
+        # colors
+        cols=['firebrick','navy','forestgreen']
+        lsty=['-','--','-.']
+
+        fs='medium'
+
+        # compute binned xc and tmax
+        if recompute:
+            self.compute_binned_xc_between(azimuth_bins=azimuth_bins,takeoff_bins=takeoff_bins)
+
+        # the x-c timing
+        tms=self.gxc_times
+        tspc=np.median(np.diff(tms))/200.
+        tmsf=np.arange(tms[0],tms[-1]+tspc/100,tspc)
+
+        # bins for the best-fitting histogram
+        hbns=np.arange(tmsf[0],tmsf[-1]+tspc/100,tspc*3)
+        
+        for kg in range(0,Ng):
+            tshf=self.xc_average_shifts[kg]
+            
+            for ka in range(0,Na):
+                # identify stations with relevant azimuths
+                arng=azimuth_bins[ka]
+                albl='{:0.0f} - {:0.0f} degrees from N'.format(arng[0],arng[1])
+                    
+                for kt in range(0,Nt):
+                    # identify stations with relevant takeoff angles too
+                    trng=takeoff_bins[kt]
+                    tlbl='{:0.0f} - {:0.0f} degrees\nfrom down'.format(trng[0],trng[1])                    
+
+                    # the current x-c values
+                    xch=self.xc_average[:,kg,ka,kt]
+
+                    if np.sum(~np.isnan(xch)):
+                        pm[kt,ka].plot(tmsf-tshf,xch,color=cols[kg],linestyle=lsty[kg])
+
+                        tmx=tmsf[np.argmax(xch)]-tshf
+                        pm[kt,ka].axvline(tmx,color=cols[kg],linestyle=lsty[kg],linewidth=0.5)
+                        pm2[kt,ka].axvline(tmx,color=cols[kg],linestyle=lsty[kg],linewidth=0.5,zorder=0)
+                        
+                        # note the station locations
+                        if ka==0:
+                            pm[kt,ka].text(0.01,0.85,'{:s}'.format(tlbl),
+                                           verticalalignment='top',transform=pm[kt,ka].transAxes,
+                                           horizontalalignment='center',backgroundcolor='w',
+                                           fontsize=fs)
+                        if kt==0:
+                            pm[kt,ka].set_title(albl,fontsize=fs)
+
+                        # note the number of stations
+                        Nstat=self.xc_average_nstation[kg,ka,kt]
+                        pm[kt,ka].text(0.05,0.05,'{:d} stations'.format(Nstat),
+                                       verticalalignment='bottom',transform=pm[kt,ka].transAxes,
+                                       horizontalalignment='left',backgroundcolor='w',
+                                       fontsize=fs)
+
+                        # bins of the best-fitting time shifts
+                        if Nstat>2:
+                            pm2[kt,ka].hist(self.txc_max_average[:,kg,ka,kt],bins=hbns,color=cols[kg],alpha=0.2)
+
+                    if ka==0:
+                        pm[kt,ka].set_ylabel('x-c')
+                        pm2[kt,ka].set_ylabel('# of resamplings')
+                    else:
+                        pm[kt,ka].set_yticklabels('')
+                        pm2[kt,ka].set_yticklabels('')
+
+                    if kt==Nt-1:
+                        pm[kt,ka].set_xlabel('time shift (s)')
+                        pm2[kt,ka].set_xlabel('time shift (s)')
+                    else:
+                        pm[kt,ka].set_xticklabels('')
+                        pm2[kt,ka].set_xticklabels('')
+                    pm[kt,ka].set_xlim([np.min(tms),np.max(tms)])
+                    pm2[kt,ka].set_xlim(np.array([-1,1])*.01)
+                    pm[kt,ka].set_ylim([0.3,1.05])
+
+    def compute_binned_xc_between(self,azimuth_bins=None,takeoff_bins=None):
+        """
+        Parameters
+        ----------
+        azimuth_bins :
+            azimuth ranges 
+        takeoff_bins :
+            takeoff angle ranges
+        """
+
+        # groups to analyse
+        groups=list(self.grpstk.keys())
+        if azimuth_bins is None:
+            azimuth_bins=[[0,45],[315,0]]
+        if takeoff_bins is None:
+            takeoff_bins=[[0,90],[90,180]]
+
+        Na=len(azimuth_bins)
+        Nt=len(takeoff_bins)
+        Ng=len(groups)
+
+        # initialize time shifts with highest x-c
+        Nboot=100
+        tmxs=np.ndarray([Nboot,Ng,Na,Nt],dtype=float)*float('nan')
+
+        # the x-c timing
+        xc=self.gxc[groups[0]]
+        tms=self.gxc_times
+        tspc=np.median(np.diff(tms))/200.
+        tmsf=np.arange(tms[0],tms[-1]+tspc/100,tspc)
+        
+        # initialize xc stacks
+        xcave=np.ndarray([tmsf.size,Ng,Na,Nt],dtype=float)*float('nan')
+
+        # to save time shifts and xc averages
+        self.xc_average=xcave
+        self.txc_max_average=tmxs
+        self.xc_average_nstation=np.zeros([Ng,Na,Nt],dtype=int)
+        self.xc_average_shifts=np.ndarray(Ng,dtype=float)*float('nan')
+
+        
+        
+        for kg in range(0,Ng):
+            # the x-c values here
+            xc=self.gxc[groups[kg]]
+
+            # grab all the data to get an average time shift
+            stns=np.array(list(xc.keys()))
+            data=np.vstack([xc[stn] for stn in stns]).T
+            data=np.mean(data,axis=1)
+
+            # make a spline to interpolate
+            cs=interpolate.CubicSpline(tms,data,bc_type='not-a-knot')
+            dataf=cs(tmsf)
+
+            # and find the maximum
+            tshf=tmsf[np.argmax(dataf)]
+            self.xc_average_shifts[kg]=tshf
+            
+            # takeoff angles and azimuths
+            tkg=np.array([self.takeoff_angles[stn][0] for stn in stns])
+            az=np.array([self.stataz[stn] for stn in stns])
+
+            for ka in range(0,Na):
+                # identify stations with relevant azimuths
+                arng=azimuth_bins[ka]
+                if arng[1]>arng[0]:
+                    ii=np.logical_and(az>=arng[0],az<=arng[1])
+                else:
+                    ii=np.logical_or(az>=arng[0],az<=arng[1])
+                    
+                for kt in range(0,Nt):
+                    # identify stations with relevant takeoff angles too
+                    trng=takeoff_bins[kt]
+                    jj=np.logical_and(tkg>=trng[0],tkg<=trng[1])
+                    jj=np.where(np.logical_and(ii,jj))[0]
+
+                    if jj.size:
+                        # note the number of stations
+                        self.xc_average_nstation[kg,ka,kt]=jj.size
+                        
+                        # grab the data
+                        datam=np.vstack([xc[stn] for stn in stns[jj]]).T
+                        data=np.mean(datam,axis=1)
+
+                        # make a spline to interpolate
+                        cs=interpolate.CubicSpline(tms,data,bc_type='not-a-knot')
+                        dataf=cs(tmsf)
+
+                        # and save
+                        xcave[:,kg,ka,kt]=dataf
+
+                        # also bootstrap the inputs
+                        if jj.size>2:
+                            for kb in range(0,Nboot):
+                                # a new mean
+                                ix=np.random.choice(jj.size,jj.size,replace=True)
+                                data=np.mean(datam[:,ix],axis=1)
+                                
+                                # make a spline to interpolate
+                                cs=interpolate.CubicSpline(tms,data,bc_type='not-a-knot')
+                                dataf=cs(tmsf)
+                                
+                                # find the maximum and its time
+                                tmx=tmsf[np.argmax(dataf)]-tshf
+                                tmxs[kb,kg,ka,kt]=tmx
+
+        
+    
+    def xc_between_stacks(self,stack=None,xcwin=[0,4],max_shift=0.1,
+                      olddur=0.5,newdur=None,stns=None):
+        """
+        cross correlate the average stack with the grouped stacks
+        to determine time shifts, amplitude, or duration
+        
+        Parameters
+        ----------
+        stack : 
+             the stack to use as a reference (default: self.totstk)
+        xcwin : 
+             time window to use for x-c (default: [0,4])
+        max_shift :
+             maximum time shift to allow, in s (default: 0.1)
+        olddur : 
+             an old template duration to consider
+        newdur : 
+             a new template duration, if of interest
+             (default: olddur, does nothing)
+        stns : 
+             which stations to consider (default: all of them)
+        """
+
+        # defaults
+        if stack is None:
+            stack=self.totstk
+        xcwin=np.atleast_1d(xcwin)
+        self.xcwin=xcwin
+        if newdur is None:
+            newdur = olddur
+        
+        # how many groups
+        Nev=len(list(self.grpstk.keys()))
+
+        # the time shifts in grid points
+        nshf=int(np.round(max_shift*self.sampling_rate))
+        ishf=np.arange(-nshf,nshf+1)
+        Nshf=ishf.size
+
+        # the stations
+        if stns is None:
+            stns=np.unique([tr.stats.station for tr in stack])
+        else:
+            stns=np.atleast_1d(stns)
+        gxc_stns=stns
+        Nstat=stns.size
+
+        # and components
+        cmps=np.unique([tr.stats.channel for tr in stack])
+        cmps=np.array(['E','N','Z'])
+        gxc_cmps=cmps
+        Ncmps=cmps.size
+        
+        # create a grid of results
+        gxc=np.ndarray([Nshf,Nev,Nstat,Ncmps],dtype=float)*float('nan')
+        gxc_nml2=np.ndarray([Nshf,Nev,Nstat,Ncmps],dtype=float)*float('nan')
+        gxc_nml1=np.ndarray([1,1,Nstat,Ncmps],dtype=float)*float('nan')
+
+        # add a buffer
+        tbuf=2/self.sampling_rate
+
+        # number of points in the grid
+        Nt=int(np.round(np.diff(xcwin)[0]*self.sampling_rate))
+
+        # create a trace for saving
+        trs=obspy.Trace()
+        trs.data=np.zeros(Nshf,dtype=float)
+        trs.stats.sampling_rate=self.sampling_rate
+        trs.stats.t0=(Nshf-1)/2*trs.stats.delta
+
+        
+        for ks in range(0,len(stns)):
+            stn=stns[ks]
+            # normalization already applied to this station
+            data_norm=self.data_norm[stn]
+            
+            for kc in range(0,len(cmps)):
+                cmp=cmps[kc]
+                tr=stack.select(station=stn,channel=cmp)
+                
+                if len(tr):
+                    # grab the relevant template
+                    tr=tr[0].copy()
+                    i1=np.argmin(np.abs(tr.times()-(tr.stats.t0+xcwin[0])))
+                    i2=i1+Nt
+                    if olddur==newdur:
+                        # just grab the data
+                        data1=tr.data[i1:i2]
+                    else:
+                        # buffer first
+                        nbuf=int(1*self.sampling_rate)
+                        data1=tr.data[(i1-nbuf):(i2+nbuf)]
+                        # modify the template
+                        data1,trash,trash=self.modify_template(data1,olddur=olddur,newdur=newdur)
+                        # and grab the middle
+                        data1=data1[nbuf:-nbuf]
+
+                    # normalization for template
+                    nml1=np.sqrt(np.sum(np.power(data1,2)))
+
+                    # and the target data
+                    data2=[]
+                    for gky in self.grpstk.keys():
+                        trg=self.grpstk[gky].select(station=stn,channel=cmp)[0]
+                        data2.append(trg.data[(i1+ishf[0]):(i2+ishf[-1]+1)])
+                    data2=np.vstack(data2).T
+
+                    # x-c
+                    xci=np.ndarray([Nshf,Nev],dtype=float)
+                    for k in range(0,Nshf):
+                        xci[k,:]=np.dot(data1,data2[k:(k+Nt),:])
+
+                    # normalize
+                    nml2=np.cumsum(np.power(data2,2),axis=0)
+                    nml2=np.append(np.zeros([1,nml2.shape[1]]),nml2,axis=0)
+                    nml2=nml2[np.arange(Nt,Nt+Nshf),:]-nml2[np.arange(0,0+Nshf),:]
+                    nml2=np.power(nml2,0.5)
+
+                    # and accomodate normalization from input seismograms
+                    #xci=np.multiply(xci,data_norm.reshape([1,data_norm.size]))
+                    #nml2=np.multiply(nml2,data_norm.reshape([1,data_norm.size]))
+                    
+                    # save unnormalized x-c
+                    gxc[:,:,ks,kc]=xci
+
+                    # and save the normalizations
+                    gxc_nml1[0,0,ks,kc]=nml1
+                    gxc_nml2[:,:,ks,kc]=nml2
+
+        # average over components
+        gxc=np.nansum(gxc,axis=3)
+
+        # normalize to get relative amplitudes
+        nml1=np.nansum(np.power(gxc_nml1,2),axis=3,keepdims=False)
+        gxcamp=np.divide(gxc,nml1)
+
+        # and fully normalized x-c
+        nml1=np.power(nml1,0.5)
+        nml2=np.nansum(np.power(gxc_nml2,2),axis=3,keepdims=False)
+        nml2=np.power(nml2,0.5)
+        gxc=np.divide(gxc,np.multiply(nml1,nml2))
+
+        # time shifts
+        gxctim=ishf/self.sampling_rate
+
+        # to save the cross-correlations
+        gkys=list(self.grpstk.keys())
+        self.gxc={}
+        self.gxc_times=gxctim
+        for k in range(0,len(gkys)):
+            self.gxc[gkys[k]]={}
+            for kstat in range(0,len(stns)):
+                self.gxc[gkys[k]][stns[kstat]]=gxc[:,k,kstat]
+
+    
+
+    
+
+    #-----END X-C FOR ARRIVAL TIME ANALYSIS-------------
         
     #-----BEGIN FOR COMPARING DURATIONS-----------------
 
@@ -2804,77 +3677,6 @@ class lfanalyse:
 
     
     #-----END FOR COMPARING DURATIONS-------------------
-    
-# Jean added on 14/8/2024
-#-----BEGIN RATIO OF SCALINGS OF LATE/EARLY EVENTS------------
-    def Plot_Ratio_of_Late_and_Early(self,fnums=np.array([1,12,142,144,156,191,22,23,246,256,3,30,31,49,52,53,55,61,62,65,66,7,70,74],dtype=int)):
-         # loop over
-          fnums=np.unique(fnums)
-          for fnum in fnums:
-              # as before, we need to initialize an analysis object
-              lf=self.lfanalyse(fnum=fnum)
-          
-              # and load in the detections and waveforms
-              lf.load_prep_data(flm=[1,8],single_norm=False)
-    
-              # stack for each group
-              lf.stack_by_group()
-
-              # and pick arrival times
-              lf.pick_stacks(minsnr=10)
-    
-              # compute scalings
-              lf.relative_station_locations()
-              lf.compute_scalings(wlen=[0,4])
-    
-              # let's go ahead and normalize the radial and transverse scalings for all stations
-              lf.normalize_radtrans_scaling()
-    
-              # pick some stations for duration classification
-              lf.split_stations(prc_classify=0.75)
-    
-              # and estimate best-fitting amplitudes and durations
-              olddurs=np.array([0.2,0.3])
-              newdurs=np.arange(0.1,0.61,0.1)
-              lf.duration_search(max_shift=0.2,olddurs=olddurs,newdurs=newdurs)
-    
-              # save the results
-              lf.save_results()
-        
-          # initialize and collect some results
-          lf2=self.lfanalyse(fnum=1)
-
-          # collect the energy calculations
-          lf2.collect_energies(fnums=fnums)
-
-          latescales=lf2.scalings['late']
-          earlyscales=lf2.scalings['early']
-          # compute ratios of late/early stacks
-          ratioScales={key: latescales[key] / earlyscales.get(key, 0)
-                       for key in latescales.keys()}
-          # compute the median of late/early stacks ratios
-          ratioScalesValues=list(ratioScales.values())
-          ratioScalesValues=np.array(ratioScalesValues)
-          medianRatios=np.median(ratioScalesValues)
-          print(medianRatios)
-          lists = ratioScales.items() # sorted by key, return a list of tuples
-          x, y = zip(*lists) # unpack a list of pairs into two tuples
-          x=list(x)
-          xfam=[]
-          for xx in x:
-              xx=xx.split('-')
-              xfam.append(xx[0])
-        
-          # plot the ratios of early and late stacks of each station
-          plt.scatter(xfam, ratioScales.values())
-          plt.xlabel("Families") 
-          plt.ylabel("ratios of late and early stacks")
-          plt.hlines(y=medianRatios,xmin=-1, xmax=25, colors='r', label='median')
-          plt.legend()
-          plt.show()
-    
-
-#-----END RATIO OF SCALINGS OF LATE/EARLY EVENTS------------
 
     
 #-----BEGIN STANDALONE ARRIVAL TIME AND SNR ANALYSIS----------
@@ -2947,4 +3749,3 @@ def compute_snrs_and_picks(st,minsnr=20,wlen=5.):
     return snrs,st,stns    
     
 #-----END STANDALONE ARRIVAL TIME AND SNR ANALYSIS------------
-
