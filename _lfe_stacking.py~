@@ -1,0 +1,140 @@
+    #-----BEGIN DATA FILTERING AND NORMALIZATION--------
+
+    def filter_data(self,flm=[1,8]):
+        """
+        filter the input data
+        
+        Parameters
+        ----------
+        flm : 
+            frequency band to filter to, in Hz
+                (default: [1,8])
+        """
+
+        # frequency band and sampling rate
+        self.flm=np.atleast_1d(flm)
+        fs=self.sampling_rate
+
+        if self.flm[0]>0 or self.flm[1]<float('inf'):
+            # construct filter
+            if self.flm[0]>0 and self.flm[1]<float('inf'):
+                # bandpass filter
+                sos=signal.butter(4,self.flm,btype='bandpass',fs=fs,output='sos')
+            elif self.flm[0]>0:
+                # highpass filter
+                sos=signal.butter(4,self.flm[0],btype='highpass',fs=fs,output='sos')
+            elif self.flm[1]<float('inf'):
+                # lowpass filter
+                sos=signal.butter(4,self.flm[1],btype='lowpass',fs=fs,output='sos')
+
+            # apply to each trace
+            for ky in self.data:
+                data=self.data[ky]
+                if data.size:
+                    # detrend first
+                    signal.detrend(data,axis=0,type='linear',overwrite_data=True)
+                    # and filter
+                    self.data[ky]=signal.sosfiltfilt(sos,data,axis=0,padtype='constant')
+
+
+    def discard_data(self,max_value=30):
+        """
+        discard data with values that are too big
+
+        Parameters
+        ----------
+        max_value : 
+             max value allowed relative to median max value
+        """
+
+        kys=np.array(list(self.data.keys()))
+        stns=np.array([ky.split('.')[0] for ky in kys])
+        astns=np.unique(stns)
+
+        for stn in astns:
+            # which keys are relevant here
+            ix=stns==stn
+            kysh=kys[ix]
+            if len(kysh)==3 and self.data_max[stn].size:
+
+                # max values relative to the normalizations
+                mx=np.divide(self.data_max[stn],self.data_norm[stn])
+                iok=mx/np.nanmedian(mx)<max_value
+
+                # change the data and indexing
+                for ky in kysh:
+                    self.data[ky]=self.data[ky][:,iok]
+                    self.ev[ky]=self.ev[ky][iok]
+
+                # and change the noted max values
+                self.data_norm[stn]=self.data_norm[stn][iok]
+                self.data_max[stn]=self.data_max[stn][iok]
+
+        
+                
+    def normalize_data(self,single_norm=False):
+        """
+        normalize the seismograms by the max amplitude on each component
+
+        Parameters
+        ----------
+        single_norm :
+               just use a single norm per station, not per interval
+                (default: False)
+        """
+
+        # stations and channels of interest
+        kys=np.array(list(self.data.keys()))
+        stns=np.array([ky.split('.')[0] for ky in kys])
+        chans=np.array([ky.split('.')[1] for ky in kys])
+        astns=np.unique(stns)
+
+        
+        # normalizations to save
+        self.data_norm=dict([(stn,[]) for stn in astns])
+        self.data_max=dict([(stn,[]) for stn in astns])
+
+        for stn in astns:
+            ii=stns==stn
+            if np.sum(ii)==3:
+                # grab the relevant data and events
+                iky=kys[ii]
+                data=[self.data[ky] for ky in iky]
+                ev=[self.ev[ky] for ky in iky]
+                
+                # events in all of them
+                iev=np.intersect1d(ev[0],ev[1])
+                iev=np.intersect1d(iev,ev[2])
+                iev.sort()
+
+                mx=np.zeros([1,iev.size])
+                for k in range(0,3):
+                    # grab the relevant data from each
+                    ieva,ia,ib=np.intersect1d(iev,ev[k],return_indices=True)
+                    datai=data[k][:,ib]
+
+                    # compute the maxima
+                    mx=np.maximum(mx,np.max(np.abs(datai),axis=0))
+
+                # note the max values
+                self.data_max[stn]=mx.flatten()
+                    
+                # if we want just one norm per station,
+                # replace the values per interval with the same values
+                if mx.size>0 and single_norm:
+                    mx=np.ones(mx.shape)*np.median(mx.flatten())
+                    
+                # save the maxima
+                self.data_norm[stn]=mx.flatten()
+
+                for k in range(0,3):
+                    # grab relevant data again
+                    ky=iky[k]
+                    ieva,ia,ib=np.intersect1d(iev,ev[k],return_indices=True)
+
+                    # normalize and resave
+                    self.data[ky]=np.divide(data[k][:,ib],mx)
+                    self.ev[ky]=ieva
+
+
+    #-----END DATA FILTERING AND NORMALIZATION----------

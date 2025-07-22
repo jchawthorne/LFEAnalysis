@@ -1,10 +1,104 @@
 import numpy as np
 import os,glob
 import pickle
+import obspy
 
 class lfeanalyse:
 
-#-----BEGIN DATA LOADING----------------------------
+    #-----BEGIN DATA NAMING CONVENTIONS-----------------
+
+    def observation_channels(self,st,remove_unknown=True):
+        """
+        replace the channel name with that written on the station,
+        eg 'EH1','BHE',etc
+
+        Parameters
+        ----------
+        st :
+             the obspy stream to edit
+        remove_unknown : 
+             remove traces where the channel is unknown
+              (default: True)
+        """
+
+        # mapping
+        # we'll just drop the first two letters of the channel
+        dmap={'1':'E','2':'N','Z':'Z',
+              'E':'E','N':'N'}
+
+        # create a map from 'E','N','Z' to instrument channels
+        chanmap={}
+        for stn in self.channels.keys():
+            chanmap[stn]={}
+            for chan in self.channels[stn]:
+                nky=dmap.get(chan[-1])
+                chanmap[stn][nky]=chan
+        self.chanmap=chanmap
+
+        # and edit the streams
+        for tr in st:
+            if tr.stats.station in chanmap:
+                tr.stats.channel=\
+                    chanmap[tr.stats.station].get(tr.stats.channel,tr.stats.channel)
+            elif remove_unknown:
+                st.remove(tr)
+
+    def add_networks(self,st,remove_unknown=True):
+        """
+        add the network names to the obspy traces
+
+        Parameters
+        ----------
+        st :
+             the obspy stream to edit
+        remove_unknown : 
+             remove traces where the channel is unknown (default: True)
+        """
+
+        for tr in st:
+            if tr.stats.station in self.networks:
+                tr.stats.network=self.networks.get(tr.stats.station,tr.stats.network)
+            elif remove_unknown:
+                st.remove(tr)
+            
+    def replace_channels(self,st):
+        """
+        replace the channel name with 'E','N', or 'Z'
+
+        Parameters
+        ----------
+        st :
+             the obspy stream to edit
+        """
+
+        # mapping
+        # we'll just drop the first two letters of the channel
+        dmap={'1':'E','2':'N','Z':'Z',
+              'E':'E','N':'N'}
+
+        # make it a stream
+        if isinstance(st,obspy.Trace):
+            st=obspy.Stream(st)
+
+        if isinstance(st,obspy.Stream):
+            # replace each one
+            for tr in st:
+                tr.stats.channel=dmap.get(tr.stats.channel[-1],tr.stats.channel[-1])
+        elif isinstance(st,dict):
+            kys=list(st.keys())
+            for oky in kys:
+                # new key
+                stn,chn=oky.split('.')
+                chn=dmap.get(chn[-1])
+                nky='.'.join([stn,chn])
+                # replace
+                st[nky]=st.pop(oky)
+                
+    #-----END DATA NAMING CONVENTIONS-------------------
+
+
+    
+    #-----BEGIN DATA LOADING----------------------------
 
     def set_data_directory(self,directory_name=None):
         """
