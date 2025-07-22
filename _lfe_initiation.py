@@ -1,0 +1,116 @@
+import numpy as np
+
+#-----BEGIN INITIATION INFO------------------------
+
+class lfeanalyse:
+
+    def __init__(self,fnum=74,lfi=None,region='Cascadia',catalog=None,
+                 data_directory=None):
+        """
+        Parameters
+        ----------
+        fnum :
+             family number
+        lfi : 
+             a previous object, to copy all info from
+        region : 
+             the region we plan to work with (default: 'Cascadia')
+        catalog :
+             which LFE catalogue to use
+        data_directory : 
+             the computer directory that will contain the data
+                 (default: $DATA or the current working directory)
+        """
+
+        # set the data directory
+        self.set_data_directory()
+
+        # just note family number
+        self.fnum=int(fnum)
+
+        # and select some parameters
+        # window length
+        self.tlen=80
+
+        # window for scaling computation
+        self.wlen=np.array([0.,4])
+
+        # some groups of events
+        self.groups={}
+
+        # some reference distances
+        self.ref_distances=np.array([],dtype=float)
+
+        # time splits
+        self.tsplits=np.array([0.,0.75,3])
+
+        # region and LFE catalogue
+        self.region=region
+        self.catalog=catalog
+        
+        # copy information from another object
+        if lfi is not None:
+            for ky in lfi.__dict__.keys():
+                self.__setattr__(ky,lfi.__getattribute__(ky))
+
+        # initialize anything that's region-dependent
+        self.initiate_region()
+
+        
+    def initiate_region(self,region=None):
+        """
+        intialize functions that could vary between regions
+
+        Parameters
+        ----------
+        region :
+              the region, if it is to be changed 
+               (default: None, use self.region)
+        """
+
+        # choose a slip direction and fault dip
+        self.slipdir=54+180
+        self.faultdip=20.
+
+        if region is not None:
+            self.region = region
+
+        if self.region in ['Cascadia']:
+            # choose a slip direction and fault dip
+            self.slipdir=54+180
+            self.faultdip=20.
+
+            if self.catalog is None:
+                self.catalog='Bostock'
+            
+            # note how to read the detections
+            if self.catalog in ['Bostock']:
+                self.read_detection_info=self.read_detection_info_bostock
+
+            # note rough areas for data and plotting
+            self.latlim=np.array([46,53])
+            self.lonlim=np.array([-132,-117])
+
+            # sampling rate
+            self.sampling_rate=40.
+
+        elif self.region in ['Guerrero']:
+            if self.catalog is None:
+                self.catalog='Frank2014'
+                
+            # note how to read the detections
+            if self.catalog in ['Frank2014']:
+                self.read_detection_info=self.read_detection_info_frank2014
+
+            # note rough areas for data and plotting
+            self.latlim=np.array([15,24])
+            self.lonlim=np.array([-101,-97.6])
+
+            # sampling rate
+            self.sampling_rate=100.
+
+        elif self.region in ['Parkfield']:
+            if self.catalog is None:
+                self.catalog='Shelly2017'
+
+    #-----END INITIATION INFO------------------------

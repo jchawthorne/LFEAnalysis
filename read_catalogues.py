@@ -279,3 +279,122 @@ def read_bostock_template(fnum,data_directory=''):
 
 
 #----END BOSTOCK ET AL CASCADIA CATALOGUE--------------------------
+
+
+#----BEGIN SLOW EARTHQUAKE DATABASE READING----------------------
+
+def read_seq_database(fdir='',trange=None):
+    """
+    :param         fdir: the directory with the files of interest
+    :param       trange: time range of interest (default: all)
+    :return         tms: event times
+    :return         loc: locations [lon,lat,depth]
+    :return         mag: magnitudes
+    :return         dct: dictionary of other values
+    """
+
+    # identify available files
+    fls=np.array(glob.glob(os.path.join(fdir,'sloweq.*.csv')))
+
+    # and their time ranges
+    t1,t2=np.array([]),np.array([])
+    for fl in fls:
+        tspl=os.path.split(fl)[1].split('.')
+        t1i=datetime.datetime.strptime(tspl[1],'%Y%m%d')
+        t2i=t1i+datetime.timedelta(days=int(tspl[2]))
+        t1,t2=np.append(t1,t1i),np.append(t2,t2i)
+
+
+    # which ones to read
+    if trange is None:
+        trange=np.append(t1,t2)
+        trange=np.array([np.min(trange),np.max(trange)])
+    fls=fls[np.logical_and(t2>=trange[0],t1<=trange[1])]
+
+
+    # initialize
+    tms=np.array([])
+    loc=np.ndarray([0,3],dtype=float)
+    mag=np.array([],dtype=float)
+    
+    for fnm in fls:
+        # read the data
+        vls=np.loadtxt(fnm,comments='"',delimiter=',',dtype=str,encoding="utf8")
+        hdr=vls[0,:]
+        vls=vls[1:,:]
+
+        # make a dictionary for easy access
+        dct={}
+        for k in range(0,len(hdr)):
+            dct[hdr[k]]=vls[:,k]
+
+        # make some floats or ints
+        for hdr in ['sec','lat','lon','dep','mag','year','month','day',
+                    'hour','min','timezone','duration','length','width',
+                    'dip','rake','slip']:
+            if hdr in dct.keys():
+                vli=np.array([vl.strip() for vl in dct[hdr]])
+                msk=vli==''
+                if np.sum(msk):
+                    vli[msk]='0'
+                    dct[hdr]=np.ma.masked_array(vli.astype(float),mask=msk)
+                else:
+                    dct[hdr]=vli.astype(float)
+        dct['msec']=(dct['sec'] % 1)*1e6
+        dct['sec']=dct['sec']-dct['msec']/1e6
+        for hdr in ['year','month','day','hour','min','sec','msec']:
+            dct[hdr]=np.array(np.round(dct[hdr])).astype(int)
+
+            
+        # add to set
+        mag=np.append(mag,dct['mag'])
+        loc=np.append(loc,np.vstack([dct['lon'],dct['lat'],dct['dep']]).T,
+                      axis=0)
+
+        # some of the hours are negative!
+        ishf=np.where(dct['hour']<0)[0]
+        shfs=[datetime.timedelta(hours=int(dct['hour'][k])) for k in ishf]
+        dct['hour'][ishf]=0
+
+        # collect times
+        try:
+            tmsi=[datetime.datetime(dct['year'][k],dct['month'][k],dct['day'][k],
+                                    dct['hour'][k],dct['min'][k],dct['sec'][k],
+                                    dct['msec'][k]) -
+                  datetime.timedelta(hours=dct['timezone'][k])
+                  for k in range(0,vls.shape[0])]
+        except:
+            tmsi=[datetime.datetime(dct['year'][k],dct['month'][k],dct['day'][k])
+                  for k in range(0,vls.shape[0])]
+        
+        # shift hours if needed
+        for k in range(0,len(ishf)):
+            tmsi[ishf[k]]=tmsi[ishf[k]]+shfs[k]
+
+        # add to set
+        tms=np.append(tms,tmsi)
+
+
+    # check those in range
+    ix=np.logical_and(tms>=trange[0],tms<=trange[1])
+    tms,loc,mag=tms[ix],loc[ix,:],mag[ix]
+
+    # sort by time, space, and magnitude
+    ix=np.lexsort((mag,loc[:,2],loc[:,1],loc[:,0],tms))
+    tms,loc,mag=tms[ix],loc[ix,:],mag[ix]
+
+    # remove duplicates
+    if len(tms):
+        isame=np.sum(loc[1:,:]==loc[0:-1,:],axis=1)==loc.shape[1]
+        isame=np.logical_and(isame,tms[1:]==tms[0:-1])
+        isame=np.logical_and(isame,mag[1:]==mag[0:-1])
+        isame=np.append([False],isame)
+        ix=~isame
+        tms,loc,mag=tms[ix],loc[ix,:],mag[ix]
+        for hdri in dct.keys():
+            dct[hdri]=dct[hdri][ix]
+    
+    return tms,loc,mag,dct
+
+
+#----END SLOW EARTHQUAKE DATABASE READING------------------------

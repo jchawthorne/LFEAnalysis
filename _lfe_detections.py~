@@ -1,0 +1,106 @@
+import numpy as np
+from LFEAnalysis import read_catalogues
+import obspy
+
+#-----BEGIN READ TEMPLATE AND DETECTION INFO---------
+
+class lfeanalyse:
+    
+    def read_detection_info_frank2014(self):
+        """
+        read Frank et al (2014)'s detection times and templates
+        """
+
+        # read some LFE times from William Frank's catalog
+        tms,loc,dct=read_catalogues.read_frank2014(data_directory=self.data_directory)
+        iev=dct['Template_ID'].astype(int)
+
+        # grab some info about the families
+        fnums,ix=np.unique(iev,return_index=True)
+        flocs=loc[ix,:]
+
+        # select a family 
+        ii=np.where(fnums==self.fnum)[0]
+        fnum=fnums[ii]
+        self.floc=flocs[ii,:].flatten()
+
+        # keep a copy of all the detections
+        self.atms=np.array([obspy.UTCDateTime(tm) for tm in tms])
+        
+        # the times of interest
+        ii=iev==fnum
+        self.tms=self.atms[ii]
+
+        # the frank et al catalog doesn't have magnitudes, so
+        # let's set the magnitudes to nan for now
+        self.mags=np.ndarray(self.tms.size,dtype=float)*float('nan')
+
+    def read_detection_info_baratin2018(self):
+        """
+        read Baratin et al (2018)'s detection times and templates
+        """
+
+        # note the directory with these data
+        fdir=os.path.join(self.data_directory,'Catalogues','Baratin2018')
+        
+        # read some LFE times
+        # they're formatted as from the slow earthquake database
+        tms,loc,mag,dct=read_catalogues.read_seq_database(fdir)
+
+        # note the family locations and family numbers
+        flocs,iev=np.unique(loc,axis=0,return_inverse=True)
+
+        # because I don't like family 0
+        iev=iev+1
+
+        # select a family location
+        self.floc=flocs[self.fnum-1,:].flatten()
+
+        # keep a copy of all the detections
+        self.atms=np.array([obspy.UTCDateTime(tm) for tm in tms])
+        
+        # the times of interest
+        ii=iev==self.fnum
+        self.tms=self.atms[ii]
+
+        # the frank et al catalog doesn't have magnitudes, so
+        # let's set the magnitudes to nan for now
+        self.mags=np.ndarray(self.tms.size,dtype=float)*float('nan')
+        
+        
+    def read_detection_info_bostock(self):
+        """
+        read Bostock et al's detection times and templates
+        """
+
+        # read some LFE times for Michael Bostock's catalog
+        tms,loc,mags,iev=\
+            read_catalogues.read_bostock_cascadia(data_directory=self.data_directory)
+
+        # grab some info about the families
+        fnums,ix=np.unique(iev,return_index=True)
+        flocs=loc[ix,:]
+
+        # select a family 
+        ii=np.where(fnums==self.fnum)[0]
+        fnum=fnums[ii]
+        self.floc=flocs[ii,:].flatten()
+
+        # keep a copy of all the detections
+        self.atms=np.array([obspy.UTCDateTime(tm) for tm in tms])
+        
+        # the times of interest
+        ii=iev==fnum
+        self.tms=self.atms[ii]
+        self.mags=mags[ii]
+
+        # read the templates for this family
+        self.sttemp=read_catalogues.read_bostock_template(self.fnum,
+                         data_directory=self.data_directory)
+        for tr in self.sttemp:
+            tr.stats.station=tr.stats.station.strip()
+            tr.stats.channel=tr.stats.channel.strip()
+    
+
+
+    #-----END READ TEMPLATE AND DETECTION INFO---------
