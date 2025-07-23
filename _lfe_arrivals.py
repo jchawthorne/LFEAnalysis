@@ -18,7 +18,7 @@ class lfeanalyse:
         for tr in st:
             tr.stats.t0=self.stackpicks[tr.stats.station]
     
-    def pick_stacks(self,wlen=None,minsnr=10):
+    def pick_stacks(self,wlen=[0,4],minsnr=10):
         """
         pick arrival times on the template and compute snr
         
@@ -32,11 +32,8 @@ class lfeanalyse:
         """
 
         # save for later
-        if wlen is not None:
-            self.wlen=np.atleast_1d(wlen)
-            self.ssnr_wlen=np.atleast_1d(wlen)
-        else:
-            self.tminsnr=minsnr
+        self.wlen=np.atleast_1d(wlen)
+        self.ssnr_wlen=np.atleast_1d(wlen)
         
         # select picks on templates and compute snr
         self.stack_snrs,self.totstk,self.stns_stack =\
