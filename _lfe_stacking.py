@@ -1,6 +1,8 @@
 import numpy as np
 from scipy import signal
 import obspy
+import matplotlib.pyplot as plt
+
 
 class lfeanalyse:
 
@@ -219,9 +221,9 @@ class lfeanalyse:
         elif stype=='template':
             st=self.sttemp
             wlen=[0,self.tsnr_wlen]
-        elif stype=='all':
+        elif stype in ['all','total']:
             st=self.totstk
-            wlen=[0,self.tsnr_wlen]
+            wlen=[0,self.ssnr_wlen]
         elif 'template' in stype:
             stype=stype.split('template-')[1]
             st=self.modstack[stype]

@@ -34,6 +34,7 @@ class lfeanalyse:
         # save for later
         if wlen is not None:
             self.wlen=np.atleast_1d(wlen)
+            self.ssnr_wlen=np.atleast_1d(wlen)
         else:
             self.tminsnr=minsnr
         
