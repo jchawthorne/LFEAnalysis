@@ -284,3 +284,80 @@ class lfeanalyse:
         
     
     #-----END STATION INFORMATION AND ORIENTATION-------
+
+
+    #-----BEGIN SEISMOGRAM ROTATIONS--------------------
+
+    def project_waveforms(self,st,stns=None,y_azimuths=[0.,30.,60.],data=None):
+        """
+        Parameters
+        ----------
+        st : 
+           set of waveforms
+        stns : 
+           stations to consider
+        y_azimuths : 
+           azimuths to project to, in degrees
+        data : 
+           a dictionary of additional data to be rotated
+
+        Returns
+        -------
+        strot :
+           set of rotated waveforms
+        datarot :
+           a dictionary of rotated additional waveforms
+        """
+
+        # stations
+        if stns is None:
+            stns=np.unique([tr.stats.station for tr in st])
+        elif isinstance(stns,str):
+            stns=[stns]
+        stns=np.atleast_1d(stns)
+
+        # azimuths
+        y_azimuths=np.atleast_1d(y_azimuths).astype(float)
+
+        # outputs
+        strot=obspy.Stream()
+        datarot={}
+        dataE,dataN=0.,0.
+        
+        for stn in stns:
+            sti=st.select(station=stn)
+            for azm in y_azimuths:
+                # the relevant data
+                tre=sti.select(channel='E')[0]
+                trn=sti.select(channel='N')[0]
+
+                # also for the data to rotate, if given
+                if data is not None:
+                    dataE=data['.'.join([stn,'E'])]
+                    dataN=data['.'.join([stn,'N'])]
+
+                # angle in radians
+                thet=np.pi/180*azm
+
+                # new y/N
+                tr_y=trn.copy()
+                tr_y.data=tre.data*np.sin(thet)+trn.data*np.cos(thet)
+                tr_y.stats.channel='Y_{:0.0f}'.format(azm)
+                data_y=dataE*np.sin(thet)+dataN*np.cos(thet)
+
+                # new x/E
+                tr_x=tre.copy()
+                tr_x.data=tre.data*np.cos(thet)-trn.data*np.sin(thet)
+                tr_x.stats.channel='X_{:0.0f}'.format(azm)
+                data_x=dataE*np.cos(thet)-dataN*np.sin(thet)
+                
+                # add to set
+                strot.append(tr_x)
+                strot.append(tr_y)
+                datarot['.'.join([stn,'X'])]=data_x
+                datarot['.'.join([stn,'Y'])]=data_y
+
+        return strot,datarot
+
+    
+    #-----END SEISMOGRAM ROTATIONS----------------------
