@@ -344,6 +344,8 @@ class lfeanalyse:
         if len(morestacks):
             lg=p[0].legend([hr]+hm,np.append([stype],morestacks_string),
                            loc='upper right',fontsize='large')
+
+        return p
     
     def stack_by_group(self,minevents=100,Nboot=10,renormalize=False,
                        amp_range=None,weighting='even',group_weights=None):

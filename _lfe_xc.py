@@ -167,7 +167,7 @@ class lfeanalyse:
         amps=np.array([amps[imax[k],k,:] for k in range(0,imax.size)])
         self.allamps=amps
 
-    def normalize_amplitudes(self):
+    def separate_amplitudes(self):
         """
         reorganize amplitudes to get one relative moment per event
         and one relative amplitude per station
@@ -198,6 +198,7 @@ class lfeanalyse:
             # percentage change from previous station averages
             df=np.divide(statamp-statamp0,statamp)
 
+        print('Amplitudes met convergence criteria after {:d} iterations'.format(ctr))
         self.statamp=statamp.flatten()
         self.evamp=evamp.flatten()
 
