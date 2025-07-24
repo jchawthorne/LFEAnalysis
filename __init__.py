@@ -7,6 +7,7 @@ from . import _lfe_download_data
 from . import _lfe_stacking
 from . import _lfe_grouping
 from . import _lfe_xc
+from . import _lfe_stations_orientations
 
 
 # initiate an overall class for the LFE analysis
@@ -17,7 +18,8 @@ class lfeanalyse(_lfe_initiation.lfeanalyse,
                  _lfe_download_data.lfeanalyse,
                  _lfe_stacking.lfeanalyse,
                  _lfe_grouping.lfeanalyse,
-                 _lfe_xc.lfeanalyse):
+                 _lfe_xc.lfeanalyse,
+                 _lfe_stations_orientations.lfeanalyse):
 
     def trashfunction(self):
         pass

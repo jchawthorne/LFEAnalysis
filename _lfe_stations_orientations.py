@@ -1,0 +1,286 @@
+import numpy as np
+import obspy
+import os
+import matplotlib.pyplot as plt
+
+class lfeanalyse:
+
+    #-----BEGIN STATION INFORMATION AND ORIENTATION-----
+
+    def read_station_locations(self):
+        """
+        read the station locations from a file
+        """
+
+        # first get an inventory
+        fdir=self.directory()
+        print('Reading station info from directory {:s}'.format(fdir))
+        fname=os.path.join(fdir,'station_inventory.xml')
+        self.inventory=obspy.read_inventory(fname,format='STATIONXML')
+
+        # available channels
+        chans=self.inventory.get_contents()['channels']
+
+        # add to dictionary
+        self.statloc={}
+        self.station_local_depth={}
+        for chan in chans:
+            # this station
+            nw,stn,lc,chn=chan.split('.')
+            # location
+            xy=self.inventory.get_coordinates(chan)
+            self.statloc[stn]=\
+                np.array([xy['longitude'],xy['latitude'],xy['elevation']])
+            
+            # and station depth?
+            self.station_local_depth[stn]=xy['local_depth']
+
+    
+    def relative_station_locations(self):
+        """
+        computes LFE-station distances, in km
+        and azimuths from the LFEs to the stations
+        """
+        
+        # read station locations if needed:
+        if not 'statloc' in self.__dict__.keys():
+            self.read_station_locations()
+
+        # for each station: azimuth from earthquake to station
+        self.stataz={}
+        self.statdst={}
+        self.statxy={}
+        for stn in self.statloc.keys():
+            dst,az1,az2=obspy.geodetics.base.gps2dist_azimuth(\
+                 self.floc[1],self.floc[0],
+                 self.statloc[stn][1],self.statloc[stn][0])
+            self.stataz[stn]=az1
+            self.statdst[stn]=dst/1000
+            self.statxy[stn]=dst/1000*np.array([np.sin(az1*np.pi/180),
+                                                np.cos(az1*np.pi/180)])
+
+
+    def project_waveforms(self,st,stns=None,y_azimuths=[0.,30.,60.],data=None):
+        """
+        Parameters
+        ----------
+        st : 
+           set of waveforms
+        stns : 
+           stations to consider
+        y_azimuths : 
+           azimuths to project to, in degrees
+        data : 
+           a dictionary of additional data to be rotated
+
+        Returns
+        -------
+        strot :
+           set of rotated waveforms
+        """
+
+        # stations
+        if stns is None:
+            stns=np.unique([tr.stats.station for tr in st])
+        elif isinstance(stns,str):
+            stns=[stns]
+        stns=np.atleast_1d(stns)
+
+        # azimuths
+        y_azimuths=np.atleast_1d(y_azimuths).astype(float)
+
+        # outputs
+        strot=obspy.Stream()
+        datarot={}
+        dataE,dataN=0.,0.
+        
+        for stn in stns:
+            sti=st.select(station=stn)
+            for azm in y_azimuths:
+                # the relevant data
+                tre=sti.select(channel='E')[0]
+                trn=sti.select(channel='N')[0]
+
+                # also for the data to rotate, if given
+                if data is not None:
+                    dataE=data['.'.join([stn,'E'])]
+                    dataN=data['.'.join([stn,'N'])]
+
+                # angle in radians
+                thet=np.pi/180*azm
+
+                # new y/N
+                tr_y=trn.copy()
+                tr_y.data=tre.data*np.sin(thet)+trn.data*np.cos(thet)
+                tr_y.stats.channel='Y_{:0.0f}'.format(azm)
+                data_y=dataE*np.sin(thet)+dataN*np.cos(thet)
+
+                # new x/E
+                tr_x=tre.copy()
+                tr_x.data=tre.data*np.cos(thet)-trn.data*np.sin(thet)
+                tr_x.stats.channel='X_{:0.0f}'.format(azm)
+                data_x=dataE*np.cos(thet)-dataN*np.sin(thet)
+                
+                # add to set
+                strot.append(tr_x)
+                strot.append(tr_y)
+                datarot['.'.join([stn,'X'])]=data_x
+                datarot['.'.join([stn,'Y'])]=data_y
+
+        return strot,datarot
+
+
+    
+
+
+    def grid_takeoff_angles(self,refdepth=30.,dst=None,plot=True,velmodel='iasp91'):
+        """
+        compute the takeoff angles for these stations
+        and map the station locations to what you'd get 
+        for an LFE at depth refdepth
+
+        Parameters
+        ----------
+        refdepth :
+            reference depth in km (default: 30.)
+        dst :
+            distances to compute for, in km
+            (default: np.arange(0,200,1))
+        plot :
+            plot the results
+        velmodel :
+            the velocity model to use (default: 'iasp91')
+        """
+
+        # note reference detph
+        self.refdepth=float(refdepth)
+        
+        # distances in km
+        if dst is None:
+            dst=np.arange(0,200,1)
+
+        # and degrees
+        dstd=obspy.geodetics.base.kilometers2degrees(1)*dst
+
+        # initialize list
+        tklist_bigS=[]
+        tklist_litS=[]
+        
+        # initialize velocity model
+        from obspy import taup
+        mdl=taup.tau.TauPyModel(model=velmodel)
+
+        for k in range(0,len(dstd)):
+            # find arrivals
+            arvl=mdl.get_travel_times(source_depth_in_km=self.refdepth,
+                                      distance_in_degree=dstd[k],
+                                      phase_list=['s'])
+            tklist_litS.append([arv.takeoff_angle for arv in arvl])
+
+            arvl=mdl.get_travel_times(source_depth_in_km=self.refdepth,
+                                      distance_in_degree=dstd[k],
+                                      phase_list=['S'])
+            tklist_bigS.append([arv.takeoff_angle for arv in arvl])
+
+        self.tkang_bigS=tklist_bigS
+        self.tkang_litS=tklist_litS
+        self.dst_grid=dst
+
+        # note some reference distances
+
+        # the first location with a downgoing S
+        ndown=np.array([len(vl) for vl in self.tkang_bigS])
+        rdown=np.append(self.dst_grid[np.where(ndown>0)[0]],500)
+        rdown=np.min(rdown)
+        tdown=np.array([np.nanmax(np.append(vl,float('nan'))) for vl in self.tkang_litS])
+        tdown=np.append(tdown[np.where(ndown>0)[0]],-500)
+        tdown=np.max(tdown)
+ 
+        # when the upgoing s gets to 45 degrees
+        mnang=np.array([np.min(np.append(vl,180)) for vl in self.tkang_litS])
+        r45=np.append(self.dst_grid[np.where(mnang<135)[0]],500)
+        r45=np.min(r45)
+
+        self.ref_distances=np.array([rdown,r45])
+        self.ref_takeoff=np.array([tdown,45])
+        
+        if plot:
+            f=plt.figure()
+            p=plt.axes()
+
+            for k in range(0,len(self.dst_grid)):
+                x=np.ones(len(self.tkang_bigS[k]))*self.dst_grid[k]
+                hbigs,=p.plot(x,self.tkang_bigS[k],marker='x',linestyle='none',
+                       color='navy',label='downgoing S')
+                x=np.ones(len(self.tkang_litS[k]))*self.dst_grid[k]
+                hlits,=p.plot(x,self.tkang_litS[k],marker='x',linestyle='none',
+                       color='firebrick',label='upgoing s')
+
+            p.set_xlim([np.min(self.dst_grid),np.max(self.dst_grid)])
+            p.axvline(rdown,linestyle='--')
+            p.axvline(r45,linestyle='-.')
+            p.axhline(135,linestyle='-.')
+            p.set_xlabel('distance to station (km)')
+            p.set_ylabel('takeoff angle (degrees from down)')
+            p.set_ylim([0,180])
+            p.set_yticks(np.arange(0,181,45))
+            p.legend([hbigs,hlits],['downgoing S','upgoing s'])
+            p.set_title('for an LFE at {:0.1f} km depth'.format(refdepth))
+
+    def find_takeoff_angles(self,refdepth=30.,velmodel='iasp91'):
+        """
+        compute the takeoff angles for these stations
+        and map the station locations to what you'd get 
+        for an LFE at a reference depth
+
+        Parameters
+        ----------
+        refdepth :
+            reference depth in km (default: 30.)
+        velmodel :
+            velocity model to use for the calculations
+        """
+
+        # initialize velocity model
+        from obspy import taup
+        mdl=taup.tau.TauPyModel(model=velmodel)
+
+        # save arrival info
+        self.arrivals={}
+        self.takeoff_angles={}
+        self.arrival_times={}
+        self.phases={}
+        self.statdstm={}
+        self.statxym={}
+
+        # for mapping, grab first little s arrival
+        self.grid_takeoff_angles(refdepth=refdepth,plot=False)
+        grid_tkang=np.array([vl[0] for vl in self.tkang_litS])
+        ix=np.argsort(grid_tkang)
+        
+        for stn in self.statloc.keys():
+            # distance in degrees for this station
+            dst=obspy.geodetics.base.kilometers2degrees(self.statdst[stn])
+
+            # find arrivals
+            arvl=mdl.get_travel_times(source_depth_in_km=self.floc[2],
+                                      distance_in_degree=dst,
+                                      phase_list=['s','S'])
+            self.arrivals[stn]=arvl
+            self.takeoff_angles[stn]=np.array([arv.takeoff_angle for arv in arvl])
+            self.arrival_times[stn]=np.array([arv.time for arv in arvl])
+            self.phases[stn]=np.array([arv.name for arv in arvl])
+
+            # find upward-going arrivals
+            arvl=mdl.get_travel_times(source_depth_in_km=self.floc[2],
+                                      distance_in_degree=dst,
+                                      phase_list=['s'])
+
+            # and the distance that gives this angle
+            dnew=np.interp(arvl[0].takeoff_angle,grid_tkang[ix],self.dst_grid[ix])
+            self.statdstm[stn]=dnew
+            self.statxym[stn]=self.statxy[stn]*(dnew/self.statdst[stn])
+
+        
+    
+    #-----END STATION INFORMATION AND ORIENTATION-------
