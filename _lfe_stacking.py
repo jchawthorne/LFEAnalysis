@@ -230,11 +230,11 @@ class lfeanalyse:
             wlen=[0,self.tsnr_wlen]
         elif stype in self.grpstk.keys():
             st=self.grpstk[stype]
-            wlen=[0,self.tsnr_wlen]
+            wlen=[0,self.ssnr_wlen]
             self.set_picks(st)
         elif stype in self.diffstk.keys():
             st=self.diffstk[stype]
-            wlen=[0,self.tsnr_wlen]
+            wlen=[0,self.ssnr_wlen]
             self.set_picks(st)
 
         # additional stacks
