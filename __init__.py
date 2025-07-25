@@ -35,6 +35,7 @@ def reload_all(mdl):
     for vl in mdl.__dict__.values():
         try: 
             reload(vl)
+            print(vl)
         except:
             pass
     reload(mdl)

@@ -2758,7 +2758,7 @@ class lfanalyse:
              name of the 2nd group (default: 'late')
         """
 
-        lms=np.array([[135,180],[112,135],[80,112]])
+        lms=np.array([[0,180],[135,180],[112,135],[80,112]])
 
         Np=lms.shape[0]
         f=plt.figure(figsize=(Np*3+1,2*3+1))

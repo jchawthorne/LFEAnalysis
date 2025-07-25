@@ -27,7 +27,7 @@ class object_tosave:
 
 class lfeanalyse:
 
-    def collect_energies(self,fnums=[41]):
+    def collect_results(self,fnums=[41]):
         """
         collect the energies computed for several families
         """
@@ -40,7 +40,7 @@ class lfeanalyse:
         simpadd=['toten','totenb','statxy','statxym','takeoff_angles','statloc',
                  'arrival_times','totpol','totpolb']
         simpadd=['statxy','statxym','takeoff_angles','statloc',
-                 'arrival_times']
+                 'arrival_times','stataz','statdst','phases']
 
         # try adding 'scalings' to the list above
         
@@ -52,7 +52,8 @@ class lfeanalyse:
         listadd=[]
         
         # initialize an object
-        lfi=lfanalyse(lfi=self)
+        from . import lfeanalyse as lfeobject
+        lfi=lfeobject(lfi=self)
         
         for k in range(0,len(fnums)):
 
