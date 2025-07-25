@@ -401,7 +401,110 @@ class lfeanalyse:
                 ph.plot(x*rd,y*rd,color='k',linewidth=0.5,linestyle='--')
 
 
-    def plot_binned_coefficients(self,chn='R',avetype='median',group1='early',group2='late'):
+    def plot_radcoeff_ratios(self):
+        """
+        plot the SH and SV ratios against each other
+        """
+
+        p=plt.axes()
+        stats=self.radcoeff_ratios['SH'].keys()
+
+        sh=np.array([self.radcoeff_ratios['SH'][stn] for stn in stats])
+        sv=np.array([self.radcoeff_ratios['SV'][stn] for stn in stats])
+
+        p.plot(sh,sv,color='k',marker='x',linestyle='none');
+        p.set_xlabel('SH coefficient ratio');
+        p.set_ylabel('SV coefficient ratio');
+        p.set_xlim([-8,8])
+        p.set_ylim([-8,8])
+        p.axvline(0,zorder=0,linestyle=':',color='k')
+        p.axhline(0,zorder=0,linestyle=':',color='k')
+        
+    def bin_stations_by_radcoeff(self,svlms=[-10,0,10],shlms=[-10,10]):
+        """
+        divide the stations according the the radiation coefficient ratios
+
+        Parameters
+        ----------
+        svlms :
+            bounds for the SV coefficient ratio
+        shlms :
+            bounds for the SH coefficient ratio
+        """
+
+        svlms=np.atleast_1d(svlms)
+        shlms=np.atleast_1d(shlms)
+        Nv,Nh=svlms.size-1,shlms.size-1
+        iv,ih=np.meshgrid(np.arange(0,Nv),np.arange(0,Nh))
+        iv,ih=iv.flatten(),ih.flatten()
+
+        statlist,binlabel=[],[]
+        
+        for k in range(0,iv.size):
+
+            # the label
+            vlbl='SV ratio: {:0.1f} - {:0.1f}'.format(svlms[iv[k]],svlms[iv[k]+1])
+            hlbl='SH ratio: {:0.1f} - {:0.1f}'.format(shlms[ih[k]],shlms[ih[k]+1])
+            binlabel.append(', '.join([vlbl,hlbl]))
+
+            # go through stations
+            stats=self.radcoeff_ratios['SH'].keys()
+            statlist.append([])
+
+            for stn in stats:
+                vok=self.radcoeff_ratios['SV'][stn]>=svlms[iv[k]] and \
+                    self.radcoeff_ratios['SV'][stn]<svlms[iv[k]+1]
+                hok=self.radcoeff_ratios['SH'][stn]>=shlms[ih[k]] and \
+                    self.radcoeff_ratios['SH'][stn]<shlms[ih[k]+1]
+
+                if vok and hok:
+                    statlist[k].append(stn)
+
+        return statlist,binlabel
+
+                
+    def bin_stations_by_takeoff(self,lms=[[0,180],[135,180],[112,135],[80,112]]):
+        """
+        divide the stations into groups according to takeoff angle
+
+        Parameters
+        ----------
+        lms :
+           list of takeoff ranges or 2-D array of takeoff angles
+        
+        Returns
+        -------
+        stnlists :
+           lists of stations for each bin
+        binlabel :
+           label for each bin
+        """
+
+        # initialize station list and labels
+        statlist=[]
+        binlabel=[]
+
+        # make a 2-D array
+        lms=np.atleast_2d(lms)
+        
+        for k in range(0,lms.shape[0]):
+            # initialize station list for this range
+            statlist.append([])
+            
+            # find usable takeoff angles
+            kys=self.takeoff_angles.keys()
+            for stn in kys:
+                tkg=self.takeoff_angles[stn][0]
+                if tkg>=lms[k,0] and tkg<lms[k,1]:
+                    statlist[k].append(stn)
+
+            # create a label
+            lbl=r'takeoff: {:0.0f} - {:0.0f} degrees'.format(lms[k,0],lms[k,1])
+            binlabel.append(lbl)
+
+        return statlist,binlabel
+
+    def plot_binned_coefficients(self,chn='R',avetype='median',group1='early',group2='late',statlist=None,binlabel=None):
         """
         Parameters
         ----------
@@ -415,9 +518,13 @@ class lfeanalyse:
              name of the 2nd group (default: 'late')
         """
 
-        lms=np.array([[0,180],[135,180],[112,135],[80,112]])
 
-        Np=lms.shape[0]
+        # find the groups of stations to plot
+        if statlist is None or binlabel is None:
+            statlist,binlabel=self.bin_stations_by_takeoff()
+        
+
+        Np=len(statlist)
         f=plt.figure(figsize=(Np*3+1,2*3+1))
         gs,p=gridspec.GridSpec(Np,2),[]
         gs.update(left=0.1,right=0.9,bottom=0.2,top=0.92)
@@ -428,13 +535,14 @@ class lfeanalyse:
         pm=p.reshape([Np,2])
         fs='large'
 
-        # find usable takeoff angles
-        kys=np.array(list(self.scalingsc[group1].keys()))
-        tkg=np.array([self.takeoff_angles[ky][0] for ky in kys])
-
+        
         bns=np.linspace(-.3,.3,30)
         bbns=np.linspace(-.03,.03,30)
 
+        bns=np.linspace(-.5,.5,30)
+        bbns=np.linspace(-.05,.05,30)
+
+        
         if avetype=='mean':
             avefun=np.mean
         elif avetype=='median':
@@ -444,16 +552,19 @@ class lfeanalyse:
         lmap=lmap.get(chn,chn)
         for k in range(0,Np):
             # which values to use
-            ix=np.logical_and(tkg>=lms[k,0],tkg<lms[k,1])
-            stns=kys[ix]
+
+            stns=statlist[k]
             
             # scalings
-            scl=np.array([self.scalingsc[group2][stn][chn]-
-                          self.scalingsc[group1][stn][chn]
-                          for stn in stns])
-            sclb=[self.scalingscb[group2][stn][chn]-
-                  self.scalingscb[group1][stn][chn]
-                  for stn in stns]
+            scl,sclb=[],[]
+            for stn in stns:
+                if stn in self.scalingsc[group2].keys():
+                    scl.append(self.scalingsc[group2][stn][chn]-
+                               self.scalingsc[group1][stn][chn])
+                    sclb.append(self.scalingscb[group2][stn][chn]-
+                                self.scalingscb[group1][stn][chn])
+            scl=np.array(scl)
+            sclb=np.array(sclb)
             scls=np.array([np.std(vl) for vl in sclb])
             scl=scl[scls<0.05]
 
@@ -480,7 +591,7 @@ class lfeanalyse:
                 pm[k,1].set_xticklabels('')
                 pm[k,0].set_xticklabels('')
 
-            lbl=r'takeoff: {:0.0f} - {:0.0f} degrees'.format(lms[k,0],lms[k,1])
+            lbl=binlabel[k]
             pm[k,1].text(1,1,lbl,transform=pm[k,0].transAxes,verticalalignment='top',
                          horizontalalignment='center',backgroundcolor='w',zorder=10,
                          fontsize=fs)
