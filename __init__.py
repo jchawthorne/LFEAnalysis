@@ -1,5 +1,6 @@
 from . import read_catalogues
 from . import radpatterns
+from . import seisproc
 from . import _lfe_initiation
 from . import _seismic_data_management
 from . import _lfe_detections

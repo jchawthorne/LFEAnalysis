@@ -26,7 +26,7 @@ class lfeanalyse:
 
         # keep a copy of all the detections
         self.atms=np.array([obspy.UTCDateTime(tm) for tm in tms])
-        
+
         # the times of interest
         ii=iev==fnum
         self.tms=self.atms[ii]
@@ -77,6 +77,9 @@ class lfeanalyse:
         tms,loc,mags,iev=\
             read_catalogues.read_bostock_cascadia(data_directory=self.data_directory)
 
+        # note the family indices for all times
+        self.fnums=iev
+        
         # grab some info about the families
         fnums,ix=np.unique(iev,return_index=True)
         flocs=loc[ix,:]
@@ -85,6 +88,7 @@ class lfeanalyse:
         ii=np.where(fnums==self.fnum)[0]
         fnum=fnums[ii]
         self.floc=flocs[ii,:].flatten()
+
 
         # keep a copy of all the detections
         self.atms=np.array([obspy.UTCDateTime(tm) for tm in tms])

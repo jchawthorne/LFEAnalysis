@@ -347,8 +347,9 @@ class lfeanalyse:
 
         return p
     
-    def stack_by_group(self,minevents=100,Nboot=10,renormalize=False,
-                       amp_range=None,weighting='even',group_weights=None):
+    def stack_by_group(self,minevents=100,Nboot=30,renormalize=False,
+                       amp_range=None,weighting='even',group_weights=None,
+                       tlm=None):
         """
         stacks the seismograms
 
@@ -367,7 +368,10 @@ class lfeanalyse:
                 'even': each trace evenly (default)
                 'over_max': divide by max value
         group_weights :
-            any additional weighting to use in the groups only, per event (default: all ones)
+            any additional weighting to use in the groups only, per event
+            (default: all ones)
+        tlm :
+            time range to allow (default: whole window)
         """
 
         # note minimum number of events
@@ -396,6 +400,13 @@ class lfeanalyse:
         else:
             evok=np.arange(0,self.tms.size)
 
+        # select a particular time range
+        if tlm is not None:
+            tlm=[obspy.UTCDateTime(tm) for tm in tlm]
+            print('started with {:d} events'.format(evok.size))
+            evok=evok[np.logical_and(self.tms>=tlm[0],self.tms<=tlm[1])]
+            print('now have {:d} events'.format(evok.size))
+        self.stack_time_range=tlm
 
         # choose timing for bootstrapping
         Nsamp=int(evok.size*0.8)
@@ -403,7 +414,7 @@ class lfeanalyse:
         iboot=iboot.reshape([Nsamp,Nboot])
 
         if group_weights is None:
-            group_weights=np.ones(evok.size,dtype=float)
+            group_weights=np.ones(self.tms.size,dtype=float)
         
         for idi in self.data.keys():
             stn,chn=idi.split('.')

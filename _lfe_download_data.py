@@ -3,6 +3,7 @@ import obspy
 import os
 import pickle
 import glob
+from . import seisproc
 
 
 #-----BEGIN DATA DOWNLOAD AND SAVING----------------

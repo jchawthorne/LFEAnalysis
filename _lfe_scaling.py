@@ -2,6 +2,7 @@ import numpy as np
 import obspy
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
+import os
 
 class lfeanalyse:
         #-----BEGIN SCALING---------------------------------
@@ -31,6 +32,11 @@ class lfeanalyse:
         sclb=dict([(ky,{}) for ky in grps])
         sclc=dict([(ky,{}) for ky in grps])
         sclcb=dict([(ky,{}) for ky in grps])
+
+        # make sure stations are available for all stacks
+        for grp in grps:
+            stns2=np.unique([tr.stats.station for tr in self.grpstk[grp]])
+            stns=np.intersect1d(stns,stns2)
 
         for stn in stns:
             # for each station with E, N, Z
@@ -419,8 +425,51 @@ class lfeanalyse:
         p.set_ylim([-8,8])
         p.axvline(0,zorder=0,linestyle=':',color='k')
         p.axhline(0,zorder=0,linestyle=':',color='k')
+        p.set_aspect('equal')
+
+
+    def exclude_large_uncertainty_stations(self,statlist,maxstd=0.1):
+        """
+        Parameters
+        ----------
+        statlist :
+           lists of stations for each bin
+        maxstd :
+           maximum allowed bootstrapped-based standard deviation in the
+            radial change (default: 0.1)
+
+        Returns
+        -------
+        statlist :
+           lists of stations for each bin,
+            with stations with large uncertainties excluded
+        """
+
+        for k in range(0,len(statlist)):
+            # go through each station list
+            stns=set(statlist[k])
+            toremove=set([])
+            for stn in stns:
+                if not stn in self.scalingscb['early'].keys():
+                    toremove.add(stn)
+                else:
+                    # grab out the early and late radial scalings
+                    rearly=np.array(self.scalingscb['early'][stn]['R'])
+                    rlate=np.array(self.scalingscb['late'][stn]['R'])
+                    
+                    # take the std of the difference
+                    rdunc=np.std(rearly-rlate)
+                    if not (rdunc<maxstd):
+                        toremove.add(stn)
+
+            # replace this set of stations
+            statlist[k]=list(stns-toremove)
+
+        return statlist
         
-    def bin_stations_by_radcoeff(self,svlms=[-10,0,10],shlms=[-10,10]):
+    def bin_stations_by_radcoeff(self,svlms=[-10,0,10],shlms=[-10,10],
+                                 single_arrival_only=True,
+                                 single_arrival_window=None):
         """
         divide the stations according the the radiation coefficient ratios
 
@@ -430,6 +479,18 @@ class lfeanalyse:
             bounds for the SV coefficient ratio
         shlms :
             bounds for the SH coefficient ratio
+        single_arrival_only :
+            only use stations where just one arrival is expected (default: True)
+        single_arrival_window :
+            window length to check for one arrival
+               (default: self.wlen[1])
+
+        Returns
+        -------
+        statlist :
+           lists of stations for each bin
+        binlabel :
+           label for each bin
         """
 
         svlms=np.atleast_1d(svlms)
@@ -438,6 +499,10 @@ class lfeanalyse:
         iv,ih=np.meshgrid(np.arange(0,Nv),np.arange(0,Nh))
         iv,ih=iv.flatten(),ih.flatten()
 
+        # check arrival window
+        if single_arrival_only and single_arrival_window is None:
+            single_arrival_window=self.wlen[1]
+        
         statlist,binlabel=[],[]
         
         for k in range(0,iv.size):
@@ -452,18 +517,34 @@ class lfeanalyse:
             statlist.append([])
 
             for stn in stats:
+                # check if the radiation coefficient ratios are in range
                 vok=self.radcoeff_ratios['SV'][stn]>=svlms[iv[k]] and \
                     self.radcoeff_ratios['SV'][stn]<svlms[iv[k]+1]
                 hok=self.radcoeff_ratios['SH'][stn]>=shlms[ih[k]] and \
                     self.radcoeff_ratios['SH'][stn]<shlms[ih[k]+1]
 
                 if vok and hok:
-                    statlist[k].append(stn)
+                    if not single_arrival_only:
+                        # append if there's no requirement for one arrival
+                        statlist[k].append(stn)
+                    else:
+                        # check that there's just one arrival
+                        # in the window of interest
+                        tnext=self.arrival_times[stn]
+                        if len(tnext)==1:
+                            statlist[k].append(stn)
+                        elif len(tnext)>1:
+                            tnext=tnext-np.min(tnext)
+                            tnext.sort()
+                            if tnext[1]<single_arrival_window:
+                                statlist[k].append(stn)
 
         return statlist,binlabel
 
                 
-    def bin_stations_by_takeoff(self,lms=[[0,180],[135,180],[112,135],[80,112]]):
+    def bin_stations_by_takeoff(self,lms=[[0,180],[135,180],[112,135],[90,112]],
+                                single_arrival_only=True,
+                                single_arrival_window=None):
         """
         divide the stations into groups according to takeoff angle
 
@@ -471,10 +552,16 @@ class lfeanalyse:
         ----------
         lms :
            list of takeoff ranges or 2-D array of takeoff angles
+        single_arrival_only :
+            only use stations where just one arrival is expected (default: True)
+        single_arrival_window :
+            window length to check for one arrival
+               (default: self.wlen[1])
+        
         
         Returns
         -------
-        stnlists :
+        statlist :
            lists of stations for each bin
         binlabel :
            label for each bin
@@ -483,6 +570,11 @@ class lfeanalyse:
         # initialize station list and labels
         statlist=[]
         binlabel=[]
+
+        # check arrival window
+        if single_arrival_only and single_arrival_window is None:
+            single_arrival_window=self.wlen[1]
+
 
         # make a 2-D array
         lms=np.atleast_2d(lms)
@@ -495,6 +587,20 @@ class lfeanalyse:
             kys=self.takeoff_angles.keys()
             for stn in kys:
                 tkg=self.takeoff_angles[stn][0]
+
+                if single_arrival_only and len(self.takeoff_angles[stn])==1:
+                    sok=True
+                elif not single_arrival_only:
+                    sok=True
+                elif single_arrival_only and len(self.takeoff_angles[stn])>1:
+                    # in the window of interest
+                    tnext=self.arrival_times[stn]
+                    tnext.sort()
+                    sok=tnext[1]<single_arrival_window
+                else:
+                    sok=False
+
+
                 if tkg>=lms[k,0] and tkg<lms[k,1]:
                     statlist[k].append(stn)
 
@@ -504,6 +610,52 @@ class lfeanalyse:
 
         return statlist,binlabel
 
+
+    def write_station_lists(self,statlist,binlabels=None,fdir=None,fname=None):
+        """
+        write the station list to a file
+
+        Paramters
+        ---------
+        statlist :
+             the station lists
+        binlabels :
+             the station list labels
+              (default: just numbers)
+        fdir :
+             directory containing the file
+               (default: $WRITTEN/LFE_Dilation)
+        fname :
+             file name within the directory
+               (default: 'station_lists')
+        """
+
+        if fdir is None:
+            fdir=os.path.join(os.environ['WRITTEN'],'LFE_Dilation')
+
+        if fname is None:
+            fname='station_lists'
+
+        fname=os.path.join(fdir,fname)
+
+        if binlabels is None:
+            binlabels = ['{:d}'.format(k) for k in range(1,len(statlist)+1)]
+
+        fl=open(fname,'w')
+
+        for k in range(0,len(statlist)):
+            fl.write(binlabels[k]+';')
+            towrite=[]
+            for stn in statlist[k]:
+                loc=self.statxym[stn]
+                towrite.append('{:s},{:0.4f},{:0.4f}'.format(stn,loc[0],loc[1]))
+            fl.write(';'.join(towrite)+'\n')
+
+        fl.close()
+
+        
+        
+    
     def plot_binned_coefficients(self,chn='R',avetype='median',group1='early',group2='late',statlist=None,binlabel=None):
         """
         Parameters
@@ -543,9 +695,9 @@ class lfeanalyse:
         bbns=np.linspace(-.05,.05,30)
 
         
-        if avetype=='mean':
+        if 'mean' in avetype:
             avefun=np.mean
-        elif avetype=='median':
+        elif 'median' in avetype:
             avefun=np.median
             
         lmap={'R':'radial','T':'transverse'}
@@ -566,14 +718,25 @@ class lfeanalyse:
             scl=np.array(scl)
             sclb=np.array(sclb)
             scls=np.array([np.std(vl) for vl in sclb])
-            scl=scl[scls<0.05]
+            scl=scl[scls<float('inf')]
 
-            # median
-            mdn=avefun(scl)
+            # median or mean
+            if 'with_discard' in avetype:
+                ilm=5
+                mdn=avefun(np.sort(scl)[ilm:-ilm])
+            else:
+                ilm=0
+                mdn=avefun(np.sort(scl))
             median_by_station=True
             if median_by_station:
-                bmdn=[avefun(scl[np.random.choice(scl.size,scl.size,replace=True)])
-                      for k in range(0,1000)]
+                if 'with_discard' in avetype:
+                    print('discarding ',ilm)
+                    bmdn=[avefun(np.sort(scl[np.random.choice(scl.size,scl.size,
+                                                              replace=True)])[ilm:-ilm])
+                          for k in range(0,1000)]
+                else:
+                    bmdn=[avefun(scl[np.random.choice(scl.size,scl.size,replace=True)])
+                          for k in range(0,1000)]
                 bmdn=np.array(bmdn)
             else:
                 bmdn=avefun(np.array(sclb),axis=0)
@@ -581,6 +744,12 @@ class lfeanalyse:
             # how many are negative
             frcneg=np.sum(bmdn<0)/np.sum(bmdn<float('inf'))
             neglbl='{:0.0f}% < 0'.format(frcneg*100)
+
+            # and what's the width
+            bmdn.sort()
+            ix=(bmdn.size*np.array([0.15,0.85])).astype(int)
+            hfwd=np.diff(bmdn[ix])[0]
+            neglbl=neglbl+'\n70% half-\nwidth: {:0.03f}'.format(hfwd/2)
 
             # mostly positive or negative
             pm[k,0].hist(scl,bins=bns)
@@ -595,7 +764,7 @@ class lfeanalyse:
             pm[k,1].text(1,1,lbl,transform=pm[k,0].transAxes,verticalalignment='top',
                          horizontalalignment='center',backgroundcolor='w',zorder=10,
                          fontsize=fs)
-            pm[k,1].text(0.95,0.95,neglbl,horizontalalignment='right',
+            pm[k,1].text(0.95,0.93,neglbl,horizontalalignment='right',
                          backgroundcolor='w',fontsize=fs,
                          transform=pm[k,1].transAxes,verticalalignment='top')
             pm[k,0].xaxis.grid('on',linestyle='--',zorder=0)
