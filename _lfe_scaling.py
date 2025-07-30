@@ -730,7 +730,6 @@ class lfeanalyse:
             median_by_station=True
             if median_by_station:
                 if 'with_discard' in avetype:
-                    print('discarding ',ilm)
                     bmdn=[avefun(np.sort(scl[np.random.choice(scl.size,scl.size,
                                                               replace=True)])[ilm:-ilm])
                           for k in range(0,1000)]
@@ -745,6 +744,9 @@ class lfeanalyse:
             frcneg=np.sum(bmdn<0)/np.sum(bmdn<float('inf'))
             neglbl='{:0.0f}% < 0'.format(frcneg*100)
 
+            # the average
+            neglbl=neglbl+'\naverage: {:0.3f}'.format(mdn)
+            
             # and what's the width
             bmdn.sort()
             ix=(bmdn.size*np.array([0.15,0.85])).astype(int)

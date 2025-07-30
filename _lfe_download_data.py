@@ -151,71 +151,106 @@ class lfeanalyse:
 
         if nev<tm.size:
             print('ONLY DOWNLOADING THE FIRST {:d} EVENTS'.format(nev))
+
+
+        # group the LFEs for downloading
+        nper=30
+        glms=np.unique(np.append(np.arange(0,nev+1,nper),nev))
+
         
+        #print(nev,glms)
+        #return
         i1=0
         # go through and download data
-        for ctr in range(0,nev):
-            print('Downloading for event {:d} of {:d}'.format(ctr+1,tm.size))
-            tmi=tm[ctr]
-            t1,t2=tmi-tbuf-tlen/4,tmi+tlen*3/4+tbuf
-            bulk=self.make_data_list(tm=tmi,tbuf=tbuf)
+        for igrp in range(0,glms.size-1):
+
             
+            # which LFEs to collect here
+            ievh=np.arange(glms[igrp],glms[igrp+1])
+            print('Downloading for events {:d} to {:d} of {:d}'.format(ievh[0]+1,ievh[-1]+1,tm.size))
+
+            # note the start times
+            tstart=[]
+            
+            # create a long list to request
+            bulk=[]
+            for iev in ievh:
+                tmi=tm[iev]
+                t1,t2=tmi-tbuf-tlen/4,tmi+tlen*3/4+tbuf
+                bulk=bulk+self.make_data_list(tm=tmi,tbuf=tbuf)
+                tstart.append(t1)
+
             # and download
             try:
-                st=clnt.get_waveforms_bulk(bulk,attach_response=True)
+                sta=clnt.get_waveforms_bulk(bulk,attach_response=True)
             except:
                 print('No data?')
-                st=obspy.Stream()
-                
-            # trim and pad
-            st.trim(starttime=t1,endtime=t2,pad=True)
-        
-            # remove anything with gaps
-            for tr in st:
-                if isinstance(tr.data,np.ma.masked_array):
-                    if np.sum(tr.data.mask)>0.01*tr.stats.npts:
-                        st.remove(tr)
-                    else:
-                        msk=seisproc.prepfiltmask(tr)
-        
-            # correct for response and bandpass filter
-            for tr in st:
-                try:
-                    tr.detrend()
-                    tr.remove_response(output='VEL',pre_filt=pre_filt,
-                                       water_level=water_level)
-                except:
-                    st.remove(tr)
-    
-            # resample
-            st.interpolate(sampling_rate=srate)
-            
-            # trim again
-            st.trim(starttime=tmi-tlen/4,endtime=tmi+tlen*3/4)
-    
-            # and add to set
-            for tr in st:
-                idi='.'.join([tr.stats.station,tr.stats.channel])
-                data[idi]=np.append(data[idi],tr.data[0:nvl].reshape([nvl,1]),axis=1)
-                ev[idi]=np.append(ev[idi],ctr)
-                
-            if (ctr>i1 and (ctr+1)%100==0) or ctr==nev-1:
-                print('Writing to file and continuing')
-                fdir=self.directory()
-                fname='data_{:d}-{:d}'.format(i1,ctr)
-                with open(os.path.join(fdir,fname), "wb") as fl:
-                    pickle.dump(data, fl)
-                fname=fname.replace('data','events')
-                with open(os.path.join(fdir,fname), "wb") as fl:
-                    pickle.dump(ev, fl)
-                i1=ctr+1
-                  
-                # reset data to save
-                data=dict([(idi,np.ndarray([nvl,0])) for idi in ids])
-                ev=dict([(idi,np.ndarray(0,dtype=int)) for idi in ids])
+                sta=obspy.Stream()
 
-                # restart the client
-                clnt=Client('IRIS')
+            # note the start times of the data
+            dstart=np.array([tr.stats.starttime for tr in sta])
+            
+
+            # now we can loop through the individual events
+            for iev in range(0,ievh.size):
+                ctr=ievh[iev]
+                #print('Processing for event {:d} of {:d}'.format(ctr+1,tm.size))
+
+                # find the relevant data
+                ix=np.where(np.abs(dstart-tstart[iev])<2/srate)[0]
+                st=obspy.Stream()
+                for ixi in ix:
+                    st.append(sta[ixi])
+                    
+                # trim and pad
+                st.trim(starttime=t1,endtime=t2,pad=True)
+                
+                # remove anything with gaps
+                for tr in st:
+                    if isinstance(tr.data,np.ma.masked_array):
+                        if np.sum(tr.data.mask)>0.01*tr.stats.npts:
+                            st.remove(tr)
+                        else:
+                            msk=seisproc.prepfiltmask(tr)
+        
+                # correct for response and bandpass filter
+                for tr in st:
+                    try:
+                        tr.detrend()
+                        tr.remove_response(output='VEL',pre_filt=pre_filt,
+                                           water_level=water_level)
+                    except:
+                        st.remove(tr)
+    
+                # resample
+                st.interpolate(sampling_rate=srate)
+            
+                # trim again
+                st.trim(starttime=tmi-tlen/4,endtime=tmi+tlen*3/4)
+    
+                # and add to set
+                for tr in st:
+                    idi='.'.join([tr.stats.station,tr.stats.channel])
+                    data[idi]=np.append(data[idi],tr.data[0:nvl].reshape([nvl,1]),axis=1)
+                    ev[idi]=np.append(ev[idi],ctr)
+                
+                if (ctr>i1 and (ctr+1)%100==0) or ctr==nev-1:
+                    print('Writing to file and continuing')
+                    fdir=self.directory()
+                    fname='data_{:d}-{:d}'.format(i1,ctr)
+                    with open(os.path.join(fdir,fname), "wb") as fl:
+                        pickle.dump(data, fl)
+                    fname=fname.replace('data','events')
+                    with open(os.path.join(fdir,fname), "wb") as fl:
+                        pickle.dump(ev, fl)
+                    i1=ctr+1
+                  
+                    # reset data to save
+                    data=dict([(idi,np.ndarray([nvl,0])) for idi in ids])
+                    ev=dict([(idi,np.ndarray(0,dtype=int)) for idi in ids])
+
+                    # restart the client
+                    clnt=Client('IRIS')
 
     def clear_seismic_data(self):
         """
