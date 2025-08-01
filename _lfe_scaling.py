@@ -542,9 +542,10 @@ class lfeanalyse:
         return statlist,binlabel
 
                 
-    def bin_stations_by_takeoff(self,lms=[[0,180],[135,180],[112,135],[90,112]],
+    def bin_stations_by_takeoff(self,lms=[[0,180],[135,180],[102,145],[50,90]],
                                 single_arrival_only=True,
-                                single_arrival_window=None):
+                                single_arrival_window=None,
+                                azimuth_range=[0,360]):
         """
         divide the stations into groups according to takeoff angle
 
@@ -557,6 +558,8 @@ class lfeanalyse:
         single_arrival_window :
             window length to check for one arrival
                (default: self.wlen[1])
+        azimuth_range :
+            allowable azimuth range (default: [0,360])
         
         
         Returns
@@ -600,8 +603,16 @@ class lfeanalyse:
                 else:
                     sok=False
 
-
-                if tkg>=lms[k,0] and tkg<lms[k,1]:
+                # check azimuth range
+                if np.diff(azimuth_range)[0] % 360 ==0:
+                    pass
+                else:
+                    azm=self.stataz[stn]
+                    azm=(azm-azimuth_range[0]) % 360
+                    if azm > (np.diff(azimuth_range)[0] % 360):
+                        sok = False
+                    
+                if tkg>=lms[k,0] and tkg<lms[k,1] and sok:
                     statlist[k].append(stn)
 
             # create a label

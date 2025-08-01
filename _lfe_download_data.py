@@ -123,6 +123,10 @@ class lfeanalyse:
 
         """
 
+
+        # save the inventory so we know which stations are possible
+        self.save_inventory()
+        
         # open the client
         from obspy.clients.fdsn.client import Client
         clnt=Client('IRIS')
@@ -264,5 +268,17 @@ class lfeanalyse:
         for fname in glob.glob(os.path.join(fdir,'*')):
             os.remove(fname)
 
+    def save_inventory(self):
+        """
+        write the inventory to a file
+        """
+
+        # preferred file name
+        fdir=self.directory()
+        print('Wrtiting station info from directory {:s}'.format(fdir))
+        fname=os.path.join(fdir,'station_inventory.xml')
+
+        # write to file
+        self.inventory.write(fname,format='STATIONXML')
     
     #-----END DATA DOWNLOAD AND SAVING------------------
