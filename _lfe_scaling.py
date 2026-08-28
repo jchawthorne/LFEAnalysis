@@ -428,7 +428,7 @@ class lfeanalyse:
         p.set_aspect('equal')
 
 
-    def exclude_large_uncertainty_stations(self,statlist,maxstd=0.1):
+    def exclude_large_uncertainty_stations(self,statlist,maxstd=0.1, group1 = 'early', group2 = 'late'):
         """
         Parameters
         ----------
@@ -437,6 +437,7 @@ class lfeanalyse:
         maxstd :
            maximum allowed bootstrapped-based standard deviation in the
             radial change (default: 0.1)
+        group1 and group2: 'early' and 'late' or 'small' and 'big'
 
         Returns
         -------
@@ -444,19 +445,18 @@ class lfeanalyse:
            lists of stations for each bin,
             with stations with large uncertainties excluded
         """
-
         for k in range(0,len(statlist)):
             # go through each station list
             stns=set(statlist[k])
             toremove=set([])
             for stn in stns:
-                if not stn in self.scalingscb['early'].keys():
+                if not stn in self.scalingscb[group1].keys():
                     toremove.add(stn)
                 else:
                     # grab out the early and late radial scalings
-                    rearly=np.array(self.scalingscb['early'][stn]['R'])
-                    rlate=np.array(self.scalingscb['late'][stn]['R'])
-                    
+                    rearly=np.array(self.scalingscb[group1][stn]['R'])
+                    rlate=np.array(self.scalingscb[group2][stn]['R'])
+
                     # take the std of the difference
                     rdunc=np.std(rearly-rlate)
                     if not (rdunc<maxstd):
@@ -791,15 +791,15 @@ class lfeanalyse:
         pm[imid,1].set_ylabel('number of bootstrapped '+avetype+'s',fontsize=fs)
 
         clbl='change in {:s} component'.format(lmap)
-        clbl=clbl+'\n'+r'$\leftarrow$less later'.ljust(40)
-        clbl=clbl+r'more later$\rightarrow$'.rjust(40)
+        clbl=clbl+'\n'+rf'$\leftarrow$less in {group2}'.ljust(40)
+        clbl=clbl+rf'more in {group2}$\rightarrow$'.rjust(40)
         pm[-1,0].set_xlabel(clbl,fontsize=fs)
         pm[-1,1].set_xlabel(clbl,fontsize=fs)
         for ph in pm[:,1]:
             ph.yaxis.tick_right()
             ph.yaxis.set_label_position('right')
 
-                
-        
     #-----END SCALING-----------------------------------
+       
+
 
