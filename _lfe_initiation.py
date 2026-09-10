@@ -23,7 +23,7 @@ class lfeanalyse:
         """
 
         # set the data directory
-        self.set_data_directory()
+        self.set_data_directory(data_directory)
 
         # just note family number
         self.fnum=int(fnum)

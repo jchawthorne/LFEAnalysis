@@ -117,7 +117,7 @@ class lfeanalyse:
             try:
                 directory_name=os.path.join(os.environ['DATA'],'LFEAnalysis')
             except:
-                directory_name=os.get_cwd()
+                directory_name=os.getcwd()
 
         self.data_directory=directory_name
                 
