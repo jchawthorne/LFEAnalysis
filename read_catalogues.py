@@ -252,7 +252,7 @@ def read_bostock_template(fnum,data_directory=''):
     # and a trace to modify
     tr=obspy.Trace()
     tr.data=np.random.rand(300)
-    tr.stats.delta=float(data['ndt'])
+    tr.stats.delta=float(data['ndt'].item())
 
     for k in range(0,len(data['ordlst'])):
         # set station
